@@ -1,0 +1,98 @@
+name: Lyrical CI
+run-name: Lyrical CI - ${{ github.event_name }}
+
+# Builds the SDK with colcon on the same Lyrical image and apt snapshot as
+# kuka_drivers' Lyrical CI, then runs its gtests.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with kuka_drivers' lyrical_ci.yml
+  ROS_APT_SNAPSHOT_DATE: "2026-09-18"
+  UBUNTU_CODENAME: resolute
+
+jobs:
+  build_test:
+    name: Build and test on Lyrical
+    runs-on: ubuntu-latest
+    container:
+      image: ros@sha256:0c19f326a339ed770ef1d4c0646a8b53bdb49dd5ff74b6de41ebdb8ac21e1806
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the SDK
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: ws/src/kuka_external_control_sdk
+
+      - name: Pin apt to the ROS snapshot and install build tools
+        run: |
+          set -euo pipefail
+          rm -f /etc/apt/sources.list.d/ros2*.list /etc/apt/sources.list.d/ros2*.sources
+          echo "deb [trusted=yes] http://snapshots.ros.org/${ROS_DISTRO}/${ROS_APT_SNAPSHOT_DATE}/ubuntu ${UBUNTU_CODENAME} main" \
+            > /etc/apt/sources.list.d/ros2-snapshot.list
+          apt-get update -qq
+          ros_pkgs=$(apt list --upgradable 2>/dev/null | grep -oP "^ros-${ROS_DISTRO}-[^/]+" || true)
+          if [ -n "${ros_pkgs}" ]; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade \
+              -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold ${ros_pkgs}
+          fi
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            python3-colcon-common-extensions python3-rosdep
+
+      - name: rosdep
+        run: |
+          set -euo pipefail
+          rosdep init 2>/dev/null || true
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths ws/src --ignore-src -y --rosdistro "${ROS_DISTRO}"
+
+      - name: colcon build
+        run: |
+          set -eo pipefail +u
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          cd ws
+          colcon build --merge-install --event-handlers console_cohesion+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+
+      - name: colcon test
+        run: |
+          set -eo pipefail +u
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          cd ws
+          colcon test --merge-install --event-handlers console_cohesion+
+          results=$(colcon test-result --all --verbose)
+          printf '%s\n' "${results}"
+          colcon test-result --all
+          count=$(printf '%s\n' "${results}" | sed -n 's/^Summary: \([0-9][0-9]*\) tests\?,.*/\1/p')
+          echo "colcon recorded ${count:-0} tests"
+          {
+            echo "### Test results"
+            echo '```'
+            printf '%s\n' "${results}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          [ "${count:-0}" -ge 1 ]
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results
+          path: ws/build/kuka_external_control_sdk_iiqka2/Testing/**/Test.xml
+          if-no-files-found: warn
