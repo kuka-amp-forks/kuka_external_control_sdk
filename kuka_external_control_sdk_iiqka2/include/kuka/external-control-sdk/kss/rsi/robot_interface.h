@@ -66,7 +66,7 @@ public:
   // Non-blocking form of CancelRsiProgram: request, then poll for completion
   virtual Status RequestRsiProgramCancel() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual bool IsRsiProgramCancelled() const { return false; }
-  // True when a status telegram has arrived but is not processed yet
+  // True when a status telegram has arrived but is not received yet
   virtual bool IsStatusTelegramPending() const { return false; }
   virtual Status TurnOnDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status TurnOffDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }

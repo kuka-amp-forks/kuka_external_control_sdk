@@ -33,7 +33,6 @@ const char SocketAddress::kAnyAddress[] = "0.0.0.0";
 
 // Possible features:
 // - IPv6
-// - implement isReadable(MSG_PEEK) to check whether any message without consuming it
 
 SocketAddress::SocketAddress()
 {
