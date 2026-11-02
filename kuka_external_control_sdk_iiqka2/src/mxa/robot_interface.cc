@@ -82,6 +82,8 @@ Status Robot::RequestRsiProgramCancel()
 
 bool Robot::IsRsiProgramCancelled() const { return client_.IsRsiCancelled(); }
 
+bool Robot::IsStatusTelegramPending() const { return client_.IsTelegramPending(); }
+
 Status Robot::SendControlSignal()
 {
   return kuka::external::control::kss::rsi::Robot::SendControlSignal();

@@ -20,7 +20,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include "kuka/external-control-sdk/kss/mxa/client.h"
@@ -63,6 +66,54 @@ public:
   std::atomic<int> telegrams{0};
 };
 
+// Holds the keep-alive thread in the hook until released, as a local stall would
+class HoldingStatusHandler : public IStatusUpdateHandler
+{
+public:
+  void OnStatusUpdateReceived(const StatusUpdate &) override {}
+  void OnTelegramReceived() override
+  {
+    std::unique_lock<std::mutex> lk{mtx};
+    telegrams++;
+    cv.wait(lk, [this] { return released; });
+  }
+
+  void Release()
+  {
+    {
+      std::lock_guard<std::mutex> lk{mtx};
+      released = true;
+    }
+    cv.notify_all();
+  }
+
+  int Telegrams()
+  {
+    std::lock_guard<std::mutex> lk{mtx};
+    return telegrams;
+  }
+
+private:
+  std::mutex mtx;
+  std::condition_variable cv;
+  int telegrams = 0;
+  bool released = false;
+};
+
+bool WaitFor(const std::function<bool()> & condition)
+{
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!condition())
+  {
+    if (std::chrono::steady_clock::now() > deadline)
+    {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
 // Feeds the live keep-alive thread over loopback with identical telegrams, so
 // the status never changes after the first one
 TEST(MxaTelegramHook, StampsEveryTelegram)
@@ -95,6 +146,44 @@ TEST(MxaTelegramHook, StampsEveryTelegram)
 
   EXPECT_EQ(counts->telegrams, kTelegrams);
   EXPECT_LE(counts->status_updates, 1);
+}
+
+// A telegram that arrives while the keep-alive thread cannot run stays visible
+// as pending, and stops being pending once the thread has received it
+TEST(MxaTelegramHook, ReportsTelegramPendingUntilReceived)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+  constexpr int kTelegramSize = 256;
+
+  Client client("127.0.0.1", kClientPort);
+  EXPECT_FALSE(client.IsTelegramPending());
+  auto handler = std::make_unique<HoldingStatusHandler>();
+  auto * hold = handler.get();
+  client.RegisterStatusUpdateHandler(std::move(handler));
+  // Released before the client joins its keep-alive thread, even on a failed assertion
+  struct ReleaseOnExit
+  {
+    HoldingStatusHandler * hold;
+    ~ReleaseOnExit() { hold->Release(); }
+  } release_on_exit{hold};
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+  EXPECT_FALSE(client.IsTelegramPending());
+
+  Publisher sender(SocketAddress("127.0.0.1", kClientPort), SocketAddress(), false);
+  ASSERT_EQ(sender.Setup(), Publisher::ErrorCode::kSuccess);
+  const uint8_t telegram[kTelegramSize] = {};
+
+  ASSERT_EQ(sender.Send(telegram, kTelegramSize), Publisher::ErrorCode::kSuccess);
+  ASSERT_TRUE(WaitFor([hold] { return hold->Telegrams() == 1; }));
+  EXPECT_FALSE(client.IsTelegramPending());
+
+  ASSERT_EQ(sender.Send(telegram, kTelegramSize), Publisher::ErrorCode::kSuccess);
+  EXPECT_TRUE(WaitFor([&client] { return client.IsTelegramPending(); }));
+  EXPECT_EQ(hold->Telegrams(), 1);
+
+  hold->Release();
+  EXPECT_TRUE(WaitFor([hold] { return hold->Telegrams() == 2; }));
+  EXPECT_TRUE(WaitFor([&client] { return !client.IsTelegramPending(); }));
 }
 
 }  // namespace

@@ -62,6 +62,9 @@ public:
   // True once the requested cancel is done and the client is reset
   bool IsRsiCancelled() const;
 
+  // True when a telegram has arrived that the keep-alive thread has not received yet
+  bool IsTelegramPending() const;
+
   // Reset class to be able to start RSI again
   void ResetRSI();
 

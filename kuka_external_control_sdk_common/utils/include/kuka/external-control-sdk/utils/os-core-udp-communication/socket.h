@@ -175,6 +175,7 @@ public:
   int GetSocketFd() const;
   bool IsActive() const;
   virtual std::string GetLastErrorText() const;
+  /* true when a receive would not block; does not consume anything */
   bool IsReadable() const;
   std::pair<ErrorCode, int> GetLastSocketError() const;
   bool IsDGRAM() const;

@@ -40,6 +40,8 @@ public:  // <operations>
   ErrorCode WaitForAndReceive(std::chrono::microseconds timeout);
   ErrorCode WaitForAndReceiveAllArrived(std::chrono::microseconds timeout);
   std::pair<const uint8_t *, size_t> GetMessage() const;
+  // True when a message waits to be received; leaves it queued
+  bool IsMessagePending() const;
 
 public:  // <properties>
   static constexpr uint16_t kMaxBufferSize = 65500;

@@ -140,6 +140,8 @@ Status Client::RequestRsiCancel()
 
 bool Client::IsRsiCancelled() const { return cancelled_; }
 
+bool Client::IsTelegramPending() const { return udp_subscriber_->IsMessagePending(); }
+
 void Client::HandleRsiCancel()
 {
   if (!cancel_requested_)

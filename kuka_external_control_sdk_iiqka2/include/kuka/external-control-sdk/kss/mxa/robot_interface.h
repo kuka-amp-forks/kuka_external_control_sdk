@@ -57,6 +57,8 @@ public:
 
   bool IsRsiProgramCancelled() const override;
 
+  bool IsStatusTelegramPending() const override;
+
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 
   Status RegisterStatusResponseHandler(std::unique_ptr<IStatusUpdateHandler> && handler);

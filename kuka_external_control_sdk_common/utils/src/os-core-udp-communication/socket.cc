@@ -16,6 +16,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -23,7 +24,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
 #include <string>
 
 namespace os::core::udp::communication
@@ -33,7 +33,6 @@ const char SocketAddress::kAnyAddress[] = "0.0.0.0";
 
 // Possible features:
 // - IPv6
-// - implement isReadable(MSG_PEEK) to check whether any message without consuming it
 
 SocketAddress::SocketAddress()
 {
@@ -520,7 +519,15 @@ std::pair<Socket::ErrorCode, int> Socket::GetLastSocketError() const
   return {last_error_state_, last_errno_};
 }
 
-bool Socket::IsReadable() const { throw std::logic_error("NOT IMPLEMENTED"); }
+bool Socket::IsReadable() const
+{
+  if (!IsActive())
+  {
+    return false;
+  }
+  struct pollfd pfd = {socket_fd_, POLLIN, 0};
+  return poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN) != 0;
+}
 
 bool Socket::IsDGRAM() const
 {

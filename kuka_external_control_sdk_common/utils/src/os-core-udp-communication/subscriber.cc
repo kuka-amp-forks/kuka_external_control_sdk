@@ -163,4 +163,6 @@ std::pair<const uint8_t *, size_t> Subscriber::GetMessage() const
   return {recv_buffer_, received_msg_size_};
 }
 
+bool Subscriber::IsMessagePending() const { return socket_.IsReadable(); }
+
 }  // namespace os::core::udp::communication
