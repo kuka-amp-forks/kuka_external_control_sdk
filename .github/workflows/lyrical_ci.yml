@@ -7,10 +7,10 @@ run-name: Lyrical CI - ${{ github.event_name }}
 on:
   push:
     branches:
-      - master
+      - amp/lyrical
   pull_request:
     branches:
-      - master
+      - amp/lyrical
   workflow_dispatch:
 
 concurrency:
