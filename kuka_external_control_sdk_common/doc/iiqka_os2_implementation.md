@@ -24,7 +24,7 @@ The following methods are only supported by the EKI or mxA wrapper; they are not
 
 Since the `StartControlling` method is not supported, you might wonder how to start controlling the robot. The timeout before receiving the very first motion state from the robot controller should be set to a longer period of time. Once the program starts waiting for this motion state, you should manually start one of the RSI programs (i.e., `rsi_joint_pos_4ms` or `rsi_joint_pos_12ms.src`) previously deployed to the robot controller by selecting it on the SmartHMI. Once the first message from RSI arrives at the external control system, you will be able to control the robot.
 
-If you wish to look into the implementation, you may want to start with [`robot_interface.h`](../include/kuka/external-control-sdk/kss/rsi/robot_interface.h).
+If you wish to look into the implementation, you may want to start with [`robot_interface.h`](../../kuka_external_control_sdk_iiqka2/include/kuka/external-control-sdk/kss/rsi/robot_interface.h).
 
 ## Enhanced Robot Interface
 
@@ -45,13 +45,13 @@ However, there are methods that are only available for iiQKA.OS2 with EKI or mxA
 
 All other methods work as described in the generic `IRobot` interface description.
 
-If you wish to look into the implementation, you may want to start with [`robot_interface.h`](../include/kuka/external-control-sdk/kss/eki/robot_interface.h).
+If you wish to look into the implementation, you may want to start with [`robot_interface.h`](../../kuka_external_control_sdk_iiqka2/include/kuka/external-control-sdk/kss/eki/robot_interface.h).
 
 ## Convenience Wrapper Class
 
 To provide a unified class for using all different versions, a wrapper class was created. This class instantiates the appropriate version of the robot interface based on the configuration passed to it and forwards all method calls to the underlying implementation.
 
-If you wish to look into the implementation, you may want to start with [`robot.h`](../include/kuka/external-control-sdk/kss/robot.h).
+If you wish to look into the implementation, you may want to start with [`robot.h`](../../kuka_external_control_sdk_iiqka2/include/kuka/external-control-sdk/kss/robot.h).
 
 ## Configurable Motion-State XML Parsing
 
