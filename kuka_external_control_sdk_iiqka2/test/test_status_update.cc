@@ -69,6 +69,8 @@ TEST(StatusUpdateEquality, EachFieldAloneMakesValuesUnequal)
     [](StatusUpdate & s) { s.motion_possible_ = true; },
     [](StatusUpdate & s) { s.operation_mode_ = OperationMode::T1; },
     [](StatusUpdate & s) { s.robot_stopped_ = true; },
+    [](StatusUpdate & s) { s.brake_test_requested_ = true; },
+    [](StatusUpdate & s) { s.brake_test_warning_ = true; },
   };
 
   for (std::size_t i = 0; i < setters.size(); ++i)
