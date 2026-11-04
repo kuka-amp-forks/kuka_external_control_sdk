@@ -89,6 +89,11 @@ if(BUILD_TESTING)
     test/test_status_update.cc
   )
 
+  add_executable(
+    test_mxa_brake_test_status
+    test/test_mxa_brake_test_status.cc
+  )
+
   target_link_libraries(
     test_iiqka2_message_builder
     GTest::gtest_main
@@ -124,6 +129,13 @@ if(BUILD_TESTING)
     GTest::gtest
   )
 
+  target_link_libraries(
+    test_mxa_brake_test_status
+    GTest::gtest_main
+    ${target_name}
+    GTest::gtest
+  )
+
   target_include_directories(test_iiqka2_message_builder PUBLIC
     "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
     "$<BUILD_INTERFACE:${iiQKA2_directory}/test>"
@@ -149,11 +161,17 @@ if(BUILD_TESTING)
     "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
   )
 
+  target_include_directories(test_mxa_brake_test_status PUBLIC
+    "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../kuka_external_control_sdk_common/utils/include>"
+  )
+
   target_compile_features(test_iiqka2_message_builder INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_eki_client_parsing INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_mxa_rsi_start INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_mxa_telegram_hook INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_status_update INTERFACE cxx_std_17 PRIVATE cxx_std_17)
+  target_compile_features(test_mxa_brake_test_status INTERFACE cxx_std_17 PRIVATE cxx_std_17)
 
   include(GoogleTest)
   gtest_discover_tests(test_iiqka2_message_builder)
@@ -163,6 +181,7 @@ if(BUILD_TESTING)
   # port, so they share a lock to keep ctest from running them at once
   gtest_discover_tests(test_mxa_rsi_start PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
   gtest_discover_tests(test_mxa_telegram_hook PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
+  gtest_discover_tests(test_mxa_brake_test_status PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
 endif()
 
 install(TARGETS ${target_name} EXPORT SdkExport

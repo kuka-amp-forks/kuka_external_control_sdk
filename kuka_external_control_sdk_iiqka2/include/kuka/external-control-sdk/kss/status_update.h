@@ -36,17 +36,20 @@ struct StatusUpdate
     motion_possible_ = false;
     operation_mode_ = OperationMode::UNSPECIFIED;
     robot_stopped_ = false;
+    brake_test_requested_ = false;
+    brake_test_warning_ = false;
   }
 
   bool operator==(const StatusUpdate & other) const noexcept
   {
     return std::tie(
              control_mode_, cycle_time_, drives_powered_, emergency_stop_, guard_stop_, in_motion_,
-             motion_possible_, operation_mode_, robot_stopped_) ==
+             motion_possible_, operation_mode_, robot_stopped_, brake_test_requested_,
+             brake_test_warning_) ==
            std::tie(
              other.control_mode_, other.cycle_time_, other.drives_powered_, other.emergency_stop_,
              other.guard_stop_, other.in_motion_, other.motion_possible_, other.operation_mode_,
-             other.robot_stopped_);
+             other.robot_stopped_, other.brake_test_requested_, other.brake_test_warning_);
   }
 
   bool operator!=(const StatusUpdate & other) const noexcept { return !(*this == other); }
@@ -60,6 +63,10 @@ struct StatusUpdate
   bool motion_possible_;
   OperationMode operation_mode_;
   bool robot_stopped_;
+  // mxA BRAKETEST_REQ_INT: the controller requests a brake test
+  bool brake_test_requested_;
+  // mxA BRAKETEST_WARN
+  bool brake_test_warning_;
 };
 
 class IStatusUpdateHandler
