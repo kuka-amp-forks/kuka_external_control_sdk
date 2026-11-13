@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -673,4 +674,26 @@ TEST(MxaOrderIds, IdsWrapPastTheLargestTheKrcReports)
   EXPECT_EQ(LastOrderId(krc), static_cast<int>(krc.commands.size()) - 1);
   EXPECT_EQ(IgnoredCommands(krc), 0);
   client->ResetRSI();
+}
+
+// Built over dirty memory, as a Client on a reused heap block is
+TEST(MxaTelegram, BitsNoBlockWritesAreSentAsZero)
+{
+  alignas(Client) unsigned char storage[sizeof(Client)];
+  std::memset(storage, 0xFF, sizeof(storage));
+  auto * client = new (storage) Client("127.0.0.1", GetEphemeralUdpPort());
+
+  for (std::size_t i = 0; i < kTelegramSize; i++)
+  {
+    ASSERT_EQ(client->write_buffer_[i], 0) << "write byte " << i;
+    ASSERT_EQ(client->read_buffer_[i], 0) << "read byte " << i;
+  }
+  client->mxa_wrapper_.setmxAInput(client->write_buffer_);
+  const uint8_t * telegram = client->write_buffer_;
+  EXPECT_EQ(telegram[2] & 0x7E, 0) << "byte 2 bits 1-6";
+  EXPECT_EQ(telegram[3], 0);
+  EXPECT_FALSE(Bit(telegram, 4, 6));
+  EXPECT_EQ(telegram[6], 0);
+  EXPECT_EQ(telegram[7], 0);
+  client->~Client();
 }

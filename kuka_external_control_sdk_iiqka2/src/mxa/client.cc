@@ -27,6 +27,9 @@ std::atomic<PLCIEC::DINT> Client::last_order_id_{0};
 
 Client::Client(const std::string & controller_ip, int client_port)
 {
+  // The write block sets single bits only, and the KRC reads the bits it leaves alone
+  std::memset(read_buffer_, 0, sizeof(read_buffer_));
+  std::memset(write_buffer_, 0, sizeof(write_buffer_));
   udp_publisher_ = std::make_unique<os::core::udp::communication::Publisher>(
     os::core::udp::communication::SocketAddress(controller_ip, kMXAServerPort),
     os::core::udp::communication::SocketAddress(kMXAClientSendPort), false);
