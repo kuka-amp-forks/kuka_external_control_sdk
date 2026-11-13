@@ -92,6 +92,9 @@ private:
   // One keep-alive cycle of the dispatcher start and the RSI start command
   void HandleRsiStart();
 
+  // Keeps order ids unique across clients and links, see mxAWrapper::continueOrderIds
+  void ContinueOrderIds();
+
   // Cancels the robot program before a dispatcher start when one is due.
   // Returns true once the dispatcher start may run
   bool ResetProgramBeforeStart();
@@ -151,6 +154,9 @@ private:
   std::atomic<int> rsi_start_pending_cycles_{0};
   std::atomic<bool> rsi_start_confirmed_{false};
 
+  // Last order id of any client in this process
+  static std::atomic<PLCIEC::DINT> last_order_id_;
+
   // A $CORRECTION stop is cleared only by a program reset, so the dispatcher
   // start cancels the program first after a new or a lost link
   std::atomic<bool> reset_before_start_{false};
@@ -165,8 +171,8 @@ private:
   // Above the longest cancel seen on hardware
   static constexpr int kPreStartCancelTimeoutCycles = 125;
   static constexpr int kDispatcherFreeTimeoutCycles = 125;
-  // Well above a healthy confirm; with one reset per start this fits the driver's first-read bound
-  static constexpr int kStopMessageConfirmCycles = 250;
+  // Above a healthy confirm; a needless reset still fits the driver's first-read bound
+  static constexpr int kStopMessageConfirmCycles = 125;
   std::atomic<int> stop_message_cycles_{0};
   std::atomic<bool> stop_message_reset_used_{false};
   std::atomic<bool> rsi_started_{false};

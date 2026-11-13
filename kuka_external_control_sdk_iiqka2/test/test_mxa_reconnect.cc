@@ -89,7 +89,14 @@ struct Command
   int order_id;
   int command_id;
   int tech_function;
+  // The KRC already held a state for this order id, so it did not run the command
+  bool ignored;
 };
+
+constexpr int kOrderStateActive = 5;
+constexpr int kOrderStateDone = 6;
+constexpr int kOrderStateAborted = 8;
+constexpr int kStateReturnSlots = 10;
 
 // Models the KRC at telegram level, including the "General motion enable" stop message
 class FakeKrc
@@ -100,8 +107,46 @@ public:
   bool motion_enable_message = false;
   // A $CORRECTION stop: confirming does not clear it, only a program reset does
   bool correction_stop = false;
+  bool rsi_running = false;
   std::vector<Command> commands;
   std::vector<std::vector<uint8_t>> sent;
+
+  struct OrderState
+  {
+    int order_id;
+    int state;
+  };
+  // The KRC's state return table, newest last; it outlives a link and a PLC process
+  std::vector<OrderState> state_return;
+
+  bool HoldsOrder(int order_id) const
+  {
+    for (const auto & entry : state_return)
+    {
+      if (entry.order_id == order_id)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void ReportOrder(int order_id, int state)
+  {
+    for (auto & entry : state_return)
+    {
+      if (entry.order_id == order_id)
+      {
+        entry.state = state;
+        return;
+      }
+    }
+    state_return.push_back({order_id, state});
+    if (state_return.size() > kStateReturnSlots)
+    {
+      state_return.erase(state_return.begin());
+    }
+  }
 
   void FillTelegram(uint8_t * in)
   {
@@ -117,6 +162,11 @@ public:
     SetBit(in, 2, 4, true);  // EXT
     in[4] = heartbeat_;
     in[59] = heartbeat_;
+    for (std::size_t i = 0; i < state_return.size(); i++)
+    {
+      PutDint(in, 8 + 4 * static_cast<int>(i), state_return[i].order_id);
+      in[48 + i] = static_cast<uint8_t>(state_return[i].state);
+    }
 
     const auto & command = KRC_AXISGROUPREFARR[kAxisGroup].COMMAND;
     if (command.ORDERID == 0)
@@ -127,11 +177,11 @@ public:
     {
       last_order_id_ = command.ORDERID;
       const int tech_function = command.COMMANDID == kTechFunctionCmdId ? command.CMDPARINT[41] : 0;
-      commands.push_back({command.ORDERID, command.COMMANDID, tech_function});
-      if (tech_function == kTechFunctionCancel)
+      const bool ignored = HoldsOrder(command.ORDERID);
+      commands.push_back({command.ORDERID, command.COMMANDID, tech_function, ignored});
+      if (!ignored)
       {
-        dispatcher_active = false;
-        correction_stop = false;
+        Execute(command.ORDERID, tech_function);
       }
     }
     PutDint(in, 178, command.ORDERID);
@@ -169,6 +219,7 @@ public:
   // A link drop stops the robot: the dispatcher is deselected and motion enable is lost
   void DropLink()
   {
+    AbortRsi();
     dispatcher_active = false;
     motion_enable_message = true;
   }
@@ -181,6 +232,40 @@ public:
   }
 
 private:
+  void Execute(int order_id, int tech_function)
+  {
+    if (tech_function == kTechFunctionCancel)
+    {
+      AbortRsi();
+      dispatcher_active = false;
+      correction_stop = false;
+      ReportOrder(order_id, kOrderStateDone);
+    }
+    else if (tech_function == kTechFunctionStart)
+    {
+      if (dispatcher_active)
+      {
+        rsi_running = true;
+        rsi_order_ = order_id;
+        ReportOrder(order_id, kOrderStateActive);
+      }
+    }
+    else
+    {
+      ReportOrder(order_id, kOrderStateDone);
+    }
+  }
+
+  void AbortRsi()
+  {
+    if (rsi_running)
+    {
+      ReportOrder(rsi_order_, kOrderStateAborted);
+    }
+    rsi_running = false;
+  }
+
+  int rsi_order_ = 0;
   int heartbeat_ = 0;
   int last_order_id_ = 0;
 };
@@ -199,6 +284,7 @@ public:
     krc_.FillTelegram(in_);
     auto & wrapper = client_.mxa_wrapper_;
     wrapper.getmxAOutput(in_);
+    client_.ContinueOrderIds();
     wrapper.mxACycle();
     if (tick_ <= Client::kInitTimeoutTicks + 1)
     {
@@ -262,6 +348,23 @@ void RunClientIntoTheStuckState(FakeKrc & krc)
   KRC_AXISGROUPREFARR[kAxisGroup].INTFBERRORID = 529;
 }
 
+int LastOrderId(const FakeKrc & krc);
+
+// Order ids, the echoed state return ids and the checksum may differ, nothing else
+std::vector<uint8_t> WithoutOrderIds(std::vector<uint8_t> telegram)
+{
+  for (std::size_t byte = 0; byte < telegram.size(); byte++)
+  {
+    const bool state_return_id = byte >= 12 && byte < 52;
+    const bool order_id_or_checksum = byte >= 64 && byte < 74 && byte != 68 && byte != 69;
+    if (state_return_id || order_id_or_checksum)
+    {
+      telegram[byte] = 0;
+    }
+  }
+  return telegram;
+}
+
 int FirstOrderId(const FakeKrc & krc)
 {
   return krc.commands.empty() ? 0 : krc.commands[0].order_id;
@@ -288,11 +391,11 @@ TEST(MxaReconnect, NewClientSendsWhatANewProcessSends)
   }
 
   ASSERT_EQ(reconnect_krc.sent.size(), fresh_krc.sent.size());
-  EXPECT_EQ(FirstOrderId(fresh_krc), 1);
-  EXPECT_EQ(FirstOrderId(reconnect_krc), 1) << "order ids carried over from the destroyed client";
+  EXPECT_GT(FirstOrderId(reconnect_krc), LastOrderId(stuck_krc)) << "an order id was reused";
   for (std::size_t i = 0; i < fresh_krc.sent.size(); i++)
   {
-    ASSERT_EQ(reconnect_krc.sent[i], fresh_krc.sent[i]) << "telegram " << i << " differs";
+    ASSERT_EQ(WithoutOrderIds(reconnect_krc.sent[i]), WithoutOrderIds(fresh_krc.sent[i]))
+      << "telegram " << i << " differs";
   }
 }
 
@@ -374,11 +477,15 @@ StartResult RunStart(Client & client, Link & link, FakeKrc & krc)
     link.Cycle();
     for (std::size_t c = known; c < krc.commands.size(); c++)
     {
+      if (krc.commands[c].ignored)
+      {
+        continue;
+      }
       if (krc.commands[c].tech_function == kTechFunctionCancel && result.cancel_cycle < 0)
       {
         result.cancel_cycle = i;
       }
-      if (krc.commands[c].tech_function == kTechFunctionStart)
+      if (krc.commands[c].tech_function == kTechFunctionStart && krc.rsi_running)
       {
         result.start_cycle = i;
       }
@@ -478,4 +585,92 @@ TEST(MxaCorrectionStop, LostLinkArmsAResetBeforeTheNextStart)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(client.reset_before_start_);
+}
+
+namespace
+{
+
+int LastOrderId(const FakeKrc & krc)
+{
+  return krc.commands.empty() ? 0 : krc.commands.back().order_id;
+}
+
+int IgnoredCommands(const FakeKrc & krc)
+{
+  int ignored = 0;
+  for (const auto & command : krc.commands)
+  {
+    ignored += command.ignored ? 1 : 0;
+  }
+  return ignored;
+}
+
+}  // namespace
+
+// As on hardware: the last link's RSI start was aborted by a drop, and a new client starts
+TEST(MxaOrderIds, ReconnectInTheSameProcessDoesNotReuseAnAbortedOrder)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  {
+    auto client = MakeClient();
+    Link link(*client, krc, 1);
+    link.Cycles(kCyclesToStart);
+    ASSERT_GE(RunStart(*client, link, krc).start_cycle, 0);
+    krc.StopByCorrection();
+    client->ResetRSI();
+  }
+  const int aborted = LastOrderId(krc);
+  ASSERT_FALSE(krc.rsi_running);
+
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  const auto result = RunStart(*client, link, krc);
+
+  ASSERT_GE(result.start_cycle, 0) << "the RSI start never ran";
+  EXPECT_EQ(IgnoredCommands(krc), 0) << "a command reused an id the KRC holds";
+  EXPECT_GT(LastOrderId(krc), aborted);
+  client->ResetRSI();
+}
+
+// A new process has no memory of the last one's ids, only the KRC's state return
+TEST(MxaOrderIds, NewProcessStartsAboveTheOrdersTheKrcHolds)
+{
+  FakeKrc krc;
+  krc.StopByCorrection();
+  for (int order_id = 1; order_id <= 5; order_id++)
+  {
+    krc.ReportOrder(order_id, order_id == 5 ? kOrderStateAborted : kOrderStateDone);
+  }
+  Client::last_order_id_ = 0;
+
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  const auto result = RunStart(*client, link, krc);
+
+  ASSERT_GE(result.start_cycle, 0) << "the RSI start never ran";
+  EXPECT_EQ(IgnoredCommands(krc), 0) << "a command reused an id the KRC holds";
+  EXPECT_GT(krc.commands.front().order_id, 5);
+  client->ResetRSI();
+}
+
+TEST(MxaOrderIds, IdsWrapPastTheLargestTheKrcReports)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  krc.ReportOrder(2147483645, kOrderStateDone);
+  Client::last_order_id_ = 0;
+
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  const auto result = RunStart(*client, link, krc);
+
+  ASSERT_GE(result.start_cycle, 0);
+  EXPECT_EQ(krc.commands.front().order_id, 2147483646);
+  EXPECT_EQ(LastOrderId(krc), static_cast<int>(krc.commands.size()) - 1);
+  EXPECT_EQ(IgnoredCommands(krc), 0);
+  client->ResetRSI();
 }

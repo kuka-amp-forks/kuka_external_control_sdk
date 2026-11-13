@@ -23,6 +23,8 @@ using kuka::external::control::ControlMode;
 namespace kuka::external::control::kss::mxa
 {
 
+std::atomic<PLCIEC::DINT> Client::last_order_id_{0};
+
 Client::Client(const std::string & controller_ip, int client_port)
 {
   udp_publisher_ = std::make_unique<os::core::udp::communication::Publisher>(
@@ -54,6 +56,7 @@ Client::~Client()
   {
     keep_alive_thread_.join();
   }
+  ContinueOrderIds();
 }
 
 Status Client::Setup()
@@ -309,6 +312,7 @@ void Client::StartKeepAliveThread()
           // ----------------------------------------------------------------------------
           // Read
           mxa_wrapper_.getmxAOutput(read_buffer_);
+          ContinueOrderIds();
 
           // Initialize & handle errors
           int error_code = mxa_wrapper_.mxACycle();
@@ -507,6 +511,13 @@ void Client::HandleRsiStart()
       RetryRsiStart("failed with error ID " + std::to_string(process_rsi_res.error_code));
       break;
   }
+}
+
+void Client::ContinueOrderIds()
+{
+  PLCIEC::DINT last_used = last_order_id_;
+  mxa_wrapper_.continueOrderIds(last_used);
+  last_order_id_ = last_used;
 }
 
 bool Client::ResetProgramBeforeStart()
