@@ -73,6 +73,11 @@ Status Client::Setup()
       "UDP subscriber setup failed with code " + static_cast<int>(sub_setup_ret)};
   }
 
+  // The mxA blocks keep their link state here, so a new link must not inherit the last client's
+  for (auto & group : KRC_AXISGROUPREFARR)
+  {
+    group = AXIS_GROUP_REF{};
+  }
   StartKeepAliveThread();
 
   return {ReturnCode::OK, "MXA client setup succeeded"};
@@ -161,6 +166,7 @@ void Client::HandleRsiCancel()
   if (mxa_wrapper_.cancelProgram().block_state == BLOCKSTATE::DONE)
   {
     // Reset before reporting, so a start may follow at once
+    mxa_wrapper_.stopAutoStart();
     ResetRSI();
     SetToCancelled();
   }
@@ -406,6 +412,12 @@ void Client::StartKeepAliveThread()
 
 void Client::HandleRsiStart()
 {
+  // The cancel owns MOVE_ENABLE and the dispatcher until it is done
+  if (cancel_requested_)
+  {
+    return;
+  }
+
   // AutoStart - sets existing signals of AutomaticExternal in the correct
   // sequence - used to activate AutExt block easier...
   if (start_cmd_dispatcher_)

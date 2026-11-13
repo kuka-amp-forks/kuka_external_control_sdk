@@ -131,6 +131,8 @@ public:
   BLOCKRESULT startMxAServer()
   {
     mxa_aut_ext_.MOVE_ENABLE = true;
+    // KRC_AUTOSTART checks the written MOVE_ENABLE, which a cancel left off this cycle
+    mxa_aut_ext_.OnCycle();
 
     if (mxa_auto_start_.RESETVALID)
     {
@@ -157,6 +159,13 @@ public:
       return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::DONE));
     }
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
+  }
+
+  // Abandon a dispatcher start in flight, so the next start runs KRC_AUTOSTART from the beginning
+  void stopAutoStart()
+  {
+    mxa_auto_start_.EXECUTERESET = false;
+    mxa_auto_start_.OnCycle();
   }
 
   // Drop the execute flag so the next processRSI call makes a new rising edge
