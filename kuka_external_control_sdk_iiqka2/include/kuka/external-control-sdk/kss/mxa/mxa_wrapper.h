@@ -300,6 +300,18 @@ public:
 
   bool robotStopped() const { return mxa_aut_ext_.ROB_STOPPED; }
 
+  // The brake-test signals are not outputs of the Automatic External block, so
+  // they are read from the axis group state the read block fills every cycle
+  bool brakeTestRequested() const
+  {
+    return KRC_AXISGROUPREFARR[DEFAULT_AXISGROUP_ID].AUTEXTSTATE.BRAKETEST_REQ_INT;
+  }
+
+  bool brakeTestWarning() const
+  {
+    return KRC_AXISGROUPREFARR[DEFAULT_AXISGROUP_ID].AUTEXTSTATE.BRAKETEST_WARN;
+  }
+
   int getOpMode() const
   {
     if (mxa_aut_ext_.T1)
