@@ -23,8 +23,14 @@ using kuka::external::control::ControlMode;
 namespace kuka::external::control::kss::mxa
 {
 
+std::atomic<PLCIEC::DINT> Client::last_order_id_{0};
+std::atomic<bool> Client::instance_active_{false};
+
 Client::Client(const std::string & controller_ip, int client_port)
 {
+  // The write block sets single bits only, and the KRC reads the bits it leaves alone
+  std::memset(read_buffer_, 0, sizeof(read_buffer_));
+  std::memset(write_buffer_, 0, sizeof(write_buffer_));
   udp_publisher_ = std::make_unique<os::core::udp::communication::Publisher>(
     os::core::udp::communication::SocketAddress(controller_ip, kMXAServerPort),
     os::core::udp::communication::SocketAddress(kMXAClientSendPort), false);
@@ -54,10 +60,25 @@ Client::~Client()
   {
     keep_alive_thread_.join();
   }
+  ContinueOrderIds();
+  if (owns_instance_)
+  {
+    instance_active_ = false;
+  }
 }
 
 Status Client::Setup()
 {
+  if (!owns_instance_)
+  {
+    bool expected = false;
+    if (!instance_active_.compare_exchange_strong(expected, true))
+    {
+      return {ReturnCode::ERROR, "Another MXA client is set up in this process"};
+    }
+    owns_instance_ = true;
+  }
+
   auto pub_setup_ret = udp_publisher_->Setup();
   if (pub_setup_ret != os::core::udp::communication::Publisher::ErrorCode::kSuccess)
   {
@@ -73,6 +94,13 @@ Status Client::Setup()
       "UDP subscriber setup failed with code " + static_cast<int>(sub_setup_ret)};
   }
 
+  // The mxA blocks keep their link state here, so a new link must not inherit the last client's
+  for (auto & group : KRC_AXISGROUPREFARR)
+  {
+    group = AXIS_GROUP_REF{};
+  }
+  // The KRC may hold a halted program from the last link, which this client cannot see
+  reset_before_start_ = true;
   StartKeepAliveThread();
 
   return {ReturnCode::OK, "MXA client setup succeeded"};
@@ -107,6 +135,8 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
   rsi_start_hold_cycles_ = 0;
   rsi_start_pending_cycles_ = 0;
   rsi_start_confirmed_ = false;
+  stop_message_cycles_ = 0;
+  stop_message_reset_used_ = false;
   rsi_started_ = true;
 
   // Start CMD dispatcher on first start. The keep-alive thread acts on these
@@ -161,6 +191,7 @@ void Client::HandleRsiCancel()
   if (mxa_wrapper_.cancelProgram().block_state == BLOCKSTATE::DONE)
   {
     // Reset before reporting, so a start may follow at once
+    mxa_wrapper_.stopAutoStart();
     ResetRSI();
     SetToCancelled();
   }
@@ -184,6 +215,7 @@ void Client::ResetRSI()
   rsi_start_hold_cycles_ = 0;
   rsi_start_pending_cycles_ = 0;
   rsi_start_confirmed_ = false;
+  pre_start_phase_ = PreStartPhase::NONE;
 }
 
 void Client::ConfirmRsiStart()
@@ -289,6 +321,8 @@ void Client::StartKeepAliveThread()
           // Mark MXA UDP timeout as an error except in the first ticks, since
           // that always occurs
           connected = false;
+          // A cancel in flight is lost with the link, and RSI stops with a $CORRECTION stop
+          reset_before_start_ = true;
           event_handler_->OnError("Keep-alive thread: UDP subscriber receive timed out");
         }
         if (connected)
@@ -296,6 +330,7 @@ void Client::StartKeepAliveThread()
           // ----------------------------------------------------------------------------
           // Read
           mxa_wrapper_.getmxAOutput(read_buffer_);
+          ContinueOrderIds();
 
           // Initialize & handle errors
           int error_code = mxa_wrapper_.mxACycle();
@@ -379,6 +414,8 @@ void Client::StartKeepAliveThread()
             status_update.robot_stopped_ = mxa_wrapper_.robotStopped();
             status_update.brake_test_requested_ = mxa_wrapper_.brakeTestRequested();
             status_update.brake_test_warning_ = mxa_wrapper_.brakeTestWarning();
+            status_update.stop_message_active_ = mxa_wrapper_.stopMessageActive();
+            status_update.move_enable_sent_ = mxa_wrapper_.moveEnableSent();
             if (status_update != prev_status_update)
             {
               status_update_handler_->OnStatusUpdateReceived(status_update);
@@ -404,13 +441,32 @@ void Client::StartKeepAliveThread()
 
 void Client::HandleRsiStart()
 {
+  // The cancel owns MOVE_ENABLE and the dispatcher until it is done
+  if (cancel_requested_)
+  {
+    return;
+  }
+
   // AutoStart - sets existing signals of AutomaticExternal in the correct
   // sequence - used to activate AutExt block easier...
   if (start_cmd_dispatcher_)
   {
+    if (!ResetProgramBeforeStart())
+    {
+      return;
+    }
     auto result = mxa_wrapper_.startMxAServer();
     if (result.block_state != BLOCKSTATE::DONE)
     {
+      if (!mxa_wrapper_.autoStartConfirmingStopMessage())
+      {
+        stop_message_cycles_ = 0;
+      }
+      else if (++stop_message_cycles_ >= kStopMessageConfirmCycles && !stop_message_reset_used_)
+      {
+        stop_message_reset_used_ = true;
+        reset_before_start_ = true;
+      }
       return;
     }
     start_cmd_dispatcher_ = false;
@@ -473,6 +529,59 @@ void Client::HandleRsiStart()
       RetryRsiStart("failed with error ID " + std::to_string(process_rsi_res.error_code));
       break;
   }
+}
+
+void Client::ContinueOrderIds()
+{
+  PLCIEC::DINT last_used = last_order_id_;
+  mxa_wrapper_.continueOrderIds(last_used);
+  last_order_id_ = last_used;
+}
+
+bool Client::ResetProgramBeforeStart()
+{
+  if (pre_start_phase_ == PreStartPhase::NONE)
+  {
+    if (!reset_before_start_)
+    {
+      return true;
+    }
+    if (!mxa_wrapper_.isInitialized())
+    {
+      return false;
+    }
+    reset_before_start_ = false;
+    mxa_wrapper_.stopAutoStart();
+    pre_start_cycles_ = 0;
+    pre_start_phase_ = PreStartPhase::CANCEL;
+  }
+
+  if (pre_start_phase_ == PreStartPhase::CANCEL)
+  {
+    mxa_wrapper_.moveDisable();
+    const auto result = mxa_wrapper_.cancelProgram();
+    // An error ends the cancel too: the start below still gets its chance
+    if (result.block_state == BLOCKSTATE::ACTIVE)
+    {
+      if (++pre_start_cycles_ < kPreStartCancelTimeoutCycles)
+      {
+        return false;
+      }
+      mxa_wrapper_.stopCancel();
+    }
+    pre_start_cycles_ = 0;
+    pre_start_phase_ = PreStartPhase::WAIT_DISPATCHER_FREE;
+    return false;
+  }
+
+  // startMxAServer takes a running dispatcher as started, so wait until the cancelled one is gone
+  if (mxa_wrapper_.isServerActive() && ++pre_start_cycles_ < kDispatcherFreeTimeoutCycles)
+  {
+    return false;
+  }
+  stop_message_cycles_ = 0;
+  pre_start_phase_ = PreStartPhase::NONE;
+  return true;
 }
 
 // The execute flag is already dropped; the next edge is raised after the backoff

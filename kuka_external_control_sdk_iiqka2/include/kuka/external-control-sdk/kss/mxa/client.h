@@ -36,7 +36,9 @@
 namespace kuka::external::control::kss::mxa
 {
 
-// Class for communicating with the KRC via MXA
+// Class for communicating with the KRC via MXA. The mxA blocks keep their link
+// state in one process-wide axis group array, so only one Client may be set up
+// in a process at a time; Setup refuses a second one
 class Client
 {
 public:
@@ -92,6 +94,13 @@ private:
   // One keep-alive cycle of the dispatcher start and the RSI start command
   void HandleRsiStart();
 
+  // Keeps order ids unique across clients and links, see mxAWrapper::continueOrderIds
+  void ContinueOrderIds();
+
+  // Cancels the robot program before a dispatcher start when one is due.
+  // Returns true once the dispatcher start may run
+  bool ResetProgramBeforeStart();
+
   // Count a failed start attempt: re-issue after the backoff, or report
   void RetryRsiStart(const std::string & reason);
 
@@ -146,6 +155,31 @@ private:
   std::atomic<int> rsi_start_hold_cycles_{0};
   std::atomic<int> rsi_start_pending_cycles_{0};
   std::atomic<bool> rsi_start_confirmed_{false};
+
+  static std::atomic<bool> instance_active_;
+  bool owns_instance_ = false;
+
+  // Last order id of any client in this process
+  static std::atomic<PLCIEC::DINT> last_order_id_;
+
+  // A $CORRECTION stop is cleared only by a program reset, so the dispatcher
+  // start cancels the program first after a new or a lost link
+  std::atomic<bool> reset_before_start_{false};
+  enum class PreStartPhase
+  {
+    NONE,
+    CANCEL,
+    WAIT_DISPATCHER_FREE
+  };
+  std::atomic<PreStartPhase> pre_start_phase_{PreStartPhase::NONE};
+  std::atomic<int> pre_start_cycles_{0};
+  // Above the longest cancel seen on hardware
+  static constexpr int kPreStartCancelTimeoutCycles = 125;
+  static constexpr int kDispatcherFreeTimeoutCycles = 125;
+  // Above a healthy confirm; a needless reset still fits the driver's first-read bound
+  static constexpr int kStopMessageConfirmCycles = 125;
+  std::atomic<int> stop_message_cycles_{0};
+  std::atomic<bool> stop_message_reset_used_{false};
   std::atomic<bool> rsi_started_{false};
   std::atomic<bool> rsi_started_notification_sent_{false};
   std::atomic<bool> connected_notification_sent_{false};
