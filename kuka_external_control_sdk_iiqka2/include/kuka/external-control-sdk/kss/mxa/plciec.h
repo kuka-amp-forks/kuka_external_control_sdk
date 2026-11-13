@@ -100,8 +100,19 @@ typedef std::wstring WSTRING;
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 
+#ifdef KUKA_MXA_TEST_CLOCK
+// Lets tests run the timers on a clock they step
+inline int64_t (*time_source_ms)() = nullptr;
+#endif
+
 inline int64_t getTimeInMilliseconds()
 {
+#ifdef KUKA_MXA_TEST_CLOCK
+  if (time_source_ms != nullptr)
+  {
+    return time_source_ms();
+  }
+#endif
   auto now = std::chrono::system_clock::now();
   auto duration = now.time_since_epoch();
   return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();

@@ -198,10 +198,12 @@ public:
     {
       motion_enable_message = true;
     }
-    else if (Bit(out, 1, 4))
+    else if (Bit(out, 1, 4) && !confirm_last_)
     {
       motion_enable_message = false;
     }
+    // The KRC confirms on the rising edge
+    confirm_last_ = Bit(out, 1, 4);
     if (Bit(out, 1, 6))
     {
       drives_powered = true;
@@ -267,6 +269,7 @@ private:
   }
 
   int rsi_order_ = 0;
+  bool confirm_last_ = false;
   int heartbeat_ = 0;
   int last_order_id_ = 0;
 };
@@ -696,4 +699,93 @@ TEST(MxaTelegram, BitsNoBlockWritesAreSentAsZero)
   EXPECT_EQ(telegram[6], 0);
   EXPECT_EQ(telegram[7], 0);
   client->~Client();
+}
+
+namespace
+{
+
+int64_t fake_now_ms = 0;
+int64_t FakeNow() { return fake_now_ms; }
+
+// Runs the PLC timers on fake_now_ms for its lifetime, from 0
+class FakeClock
+{
+public:
+  FakeClock()
+  {
+    fake_now_ms = 0;
+    PLCIEC::time_source_ms = FakeNow;
+  }
+  ~FakeClock()
+  {
+    PLCIEC::time_source_ms = nullptr;
+    fake_now_ms = 0;
+  }
+};
+
+}  // namespace
+
+// Two confirm pulse trains ORed into CONF_MESS can hold the bit high, so the KRC sees no edge
+TEST(MxaConfirm, EveryStartPhaseConfirmsTheStopMessageWithoutTheFallback)
+{
+  FakeClock clock;
+  std::vector<int> failed_offsets;
+  // Covers a whole period of the 200 ms on, 100 ms off confirm pulse
+  for (int offset = 0; offset < 75; offset += 5)
+  {
+    FakeKrc krc;
+    krc.DropLink();
+    auto client = MakeClient();
+    Link link(*client, krc, 1);
+    auto cycle = [&]
+    {
+      fake_now_ms += 4;
+      link.Cycle();
+    };
+    for (int i = 0; i < kCyclesToStart + offset; i++)
+    {
+      cycle();
+    }
+    StartRsi(*client);
+    bool started = false;
+    for (int i = 0; i < kFirstReadBoundCycles && !started; i++)
+    {
+      cycle();
+      started = krc.rsi_running;
+    }
+    if (!started || client->stop_message_reset_used_)
+    {
+      failed_offsets.push_back(offset);
+    }
+    client->ResetRSI();
+  }
+
+  EXPECT_TRUE(failed_offsets.empty()) << "stop message not confirmed for " << failed_offsets.size()
+                                      << " start phases, first at idle cycle offset "
+                                      << (failed_offsets.empty() ? -1 : failed_offsets[0]);
+}
+
+// As on hardware: CONF_MESS is already high from the message reset when the confirm starts
+TEST(MxaConfirm, ConfirmStartsWithAnEdgeWhenTheBitIsAlreadyHigh)
+{
+  // A frozen clock holds every confirm pulse in its high phase
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 1, 4)) << "CONF_MESS not high before the start";
+
+  StartRsi(*client);
+  bool started = false;
+  for (int i = 0; i < kFirstReadBoundCycles && !started; i++)
+  {
+    link.Cycle();
+    started = krc.rsi_running;
+  }
+
+  EXPECT_TRUE(started) << "KRC_AUTOSTART state " << client->mxa_wrapper_.mxa_auto_start_.State();
+  EXPECT_FALSE(client->stop_message_reset_used_) << "confirmed only after the fallback reset";
+  client->ResetRSI();
 }

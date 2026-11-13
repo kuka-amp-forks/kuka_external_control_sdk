@@ -64,6 +64,22 @@ if(BUILD_TESTING)
   find_package(GTest)
   enable_testing()
 
+  # The library again, with PLC timers that tests can run on their own clock
+  add_library(${target_name}-test-clock STATIC ${sources})
+  target_include_directories(${target_name}-test-clock PUBLIC
+    "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
+    ${COMMON_INCLUDE_DIRS}
+  )
+  target_link_libraries(${target_name}-test-clock
+    PUBLIC
+      Threads::Threads
+      ${common_target_name}
+    PRIVATE
+      tinyxml2
+  )
+  target_compile_definitions(${target_name}-test-clock PUBLIC KUKA_MXA_TEST_CLOCK)
+  target_compile_features(${target_name}-test-clock PRIVATE cxx_std_17)
+
   add_executable(
     test_iiqka2_message_builder
     test/test_message_builder.cc
@@ -123,7 +139,7 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_mxa_reconnect
     GTest::gtest_main
-    ${target_name}
+    ${target_name}-test-clock
     GTest::gtest
   )
 

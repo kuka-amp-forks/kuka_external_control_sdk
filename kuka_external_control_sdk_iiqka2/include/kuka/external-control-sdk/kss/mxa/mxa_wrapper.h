@@ -131,6 +131,10 @@ public:
   // Start robot interpreter of mxA
   BLOCKRESULT startMxAServer()
   {
+    // KRC_AUTOSTART confirms with its own pulse. Another pulse train ORed into
+    // CONF_MESS can keep the bit high through the confirm, and the KRC needs an edge
+    krc_error_.MESSAGERESET = false;
+    mxa_aut_ext_.CONF_MESS = false;
     mxa_aut_ext_.MOVE_ENABLE = true;
     // KRC_AUTOSTART checks the written MOVE_ENABLE, which a cancel left off this cycle
     mxa_aut_ext_.OnCycle();
@@ -153,10 +157,6 @@ public:
     {
       mxa_auto_start_.EXECUTERESET = false;
       mxa_auto_start_.OnCycle();
-      // Reset message reset flag after successful server start to avoid getting
-      // it stuck
-      krc_error_.MESSAGERESET = false;
-      mxa_aut_ext_.CONF_MESS = false;
       return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::DONE));
     }
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
