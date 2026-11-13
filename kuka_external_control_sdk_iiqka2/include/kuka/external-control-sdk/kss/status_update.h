@@ -38,6 +38,8 @@ struct StatusUpdate
     robot_stopped_ = false;
     brake_test_requested_ = false;
     brake_test_warning_ = false;
+    stop_message_active_ = false;
+    move_enable_sent_ = false;
   }
 
   bool operator==(const StatusUpdate & other) const noexcept
@@ -45,11 +47,12 @@ struct StatusUpdate
     return std::tie(
              control_mode_, cycle_time_, drives_powered_, emergency_stop_, guard_stop_, in_motion_,
              motion_possible_, operation_mode_, robot_stopped_, brake_test_requested_,
-             brake_test_warning_) ==
+             brake_test_warning_, stop_message_active_, move_enable_sent_) ==
            std::tie(
              other.control_mode_, other.cycle_time_, other.drives_powered_, other.emergency_stop_,
              other.guard_stop_, other.in_motion_, other.motion_possible_, other.operation_mode_,
-             other.robot_stopped_, other.brake_test_requested_, other.brake_test_warning_);
+             other.robot_stopped_, other.brake_test_requested_, other.brake_test_warning_,
+             other.stop_message_active_, other.move_enable_sent_);
   }
 
   bool operator!=(const StatusUpdate & other) const noexcept { return !(*this == other); }
@@ -60,6 +63,7 @@ struct StatusUpdate
   bool emergency_stop_;
   bool guard_stop_;
   bool in_motion_;
+  // mxA: $PRO_ACT, the robot interpreter program is active
   bool motion_possible_;
   OperationMode operation_mode_;
   bool robot_stopped_;
@@ -67,6 +71,10 @@ struct StatusUpdate
   bool brake_test_requested_;
   // mxA BRAKETEST_WARN
   bool brake_test_warning_;
+  // mxA $STOPMESS: a stop message is active on the controller
+  bool stop_message_active_;
+  // mxA: the MOVE_ENABLE bit of the last telegram sent; the controller does not report $MOVE_ENABLE
+  bool move_enable_sent_;
 };
 
 class IStatusUpdateHandler

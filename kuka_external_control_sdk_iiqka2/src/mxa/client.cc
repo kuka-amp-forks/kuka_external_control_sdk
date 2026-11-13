@@ -379,6 +379,8 @@ void Client::StartKeepAliveThread()
             status_update.robot_stopped_ = mxa_wrapper_.robotStopped();
             status_update.brake_test_requested_ = mxa_wrapper_.brakeTestRequested();
             status_update.brake_test_warning_ = mxa_wrapper_.brakeTestWarning();
+            status_update.stop_message_active_ = mxa_wrapper_.stopMessageActive();
+            status_update.move_enable_sent_ = mxa_wrapper_.moveEnableSent();
             if (status_update != prev_status_update)
             {
               status_update_handler_->OnStatusUpdateReceived(status_update);

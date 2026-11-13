@@ -32,6 +32,7 @@ using kuka::external::control::ControlMode;
 using kuka::external::control::EventHandler;
 using kuka::external::control::kss::CycleTime;
 using kuka::external::control::kss::mxa::Client;
+using kuka::external::control::kss::mxa::mxAWrapper;
 
 namespace
 {
@@ -450,6 +451,43 @@ TEST(MxaClientDestruction, DestructorDoesNotHangWithTheLinkDown)
   // Well under the old behavior (hangs forever); well over the destructor's
   // own 1 s cancel-wait bound plus one keep-alive receive timeout
   EXPECT_LT(elapsed, std::chrono::seconds(3));
+}
+
+TEST_F(MxaRsiStart, StopMessageIsReadFromTheAutomaticExternalState)
+{
+  auto & group = KRC_AXISGROUPREFARR[kAxisGroup];
+  auto & wrapper = client_.mxa_wrapper_;
+
+  group.AUTEXTSTATE.STOPMESS = true;
+  wrapper.mxa_aut_ext_.OnCycle();
+  EXPECT_TRUE(wrapper.stopMessageActive());
+
+  group.AUTEXTSTATE.STOPMESS = false;
+  wrapper.mxa_aut_ext_.OnCycle();
+  EXPECT_FALSE(wrapper.stopMessageActive());
+}
+
+TEST_F(MxaRsiStart, SentMoveEnableIsTheTelegramBitNotTheInput)
+{
+  auto & group = KRC_AXISGROUPREFARR[kAxisGroup];
+  auto & wrapper = client_.mxa_wrapper_;
+  uint8_t telegram[256] = {};
+  EXPECT_FALSE(wrapper.moveEnableSent()) << "reported before any telegram";
+
+  wrapper.mxa_aut_ext_.OnCycle();
+  wrapper.setmxAInput(telegram);
+  ASSERT_TRUE(group.AUTEXTCONTROL.MOVE_ENABLE);
+  EXPECT_TRUE(wrapper.moveEnableSent());
+  EXPECT_EQ(telegram[1] & (1 << 3), 1 << 3);
+
+  // A latched error keeps the bit off while the input stays on
+  group.INTFBERRORID = 532;
+  group.READDONE = true;
+  wrapper.mxa_aut_ext_.OnCycle();
+  wrapper.setmxAInput(telegram);
+  ASSERT_TRUE(group.AUTEXTCONTROL.MOVE_ENABLE);
+  EXPECT_FALSE(wrapper.moveEnableSent());
+  EXPECT_EQ(telegram[1] & (1 << 3), 0);
 }
 
 TEST_F(MxaRsiStart, StoppedDispatcherIsStartedBeforeTheCommand)

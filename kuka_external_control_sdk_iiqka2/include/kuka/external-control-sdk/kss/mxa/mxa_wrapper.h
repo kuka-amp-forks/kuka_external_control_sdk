@@ -300,6 +300,16 @@ public:
 
   bool robotStopped() const { return mxa_aut_ext_.ROB_STOPPED; }
 
+  bool stopMessageActive() const { return mxa_aut_ext_.STOPMESS; }
+
+  // The write block gates MOVE_ENABLE on the link and on any latched error, so
+  // the sent bit can differ from the Automatic External input
+  bool moveEnableSent() const
+  {
+    return krc_write_.KRC4_OUTPUT != nullptr &&
+           IsBitSet(krc_write_.KRC4_OUTPUT[MOVE_ENABLE_BYTE], MOVE_ENABLE_BIT);
+  }
+
   // The brake-test signals are not outputs of the Automatic External block, so
   // they are read from the axis group state the read block fills every cycle
   bool brakeTestRequested() const
@@ -377,6 +387,9 @@ private:
   std::array<float, TECH_FUNC_PARAM_COUNT + 1> real_array_;
 
   static constexpr int DEFAULT_AXISGROUP_ID = 1;
+  // Where KRC_WRITEAXISGROUP puts MOVE_ENABLE in the telegram
+  static constexpr int MOVE_ENABLE_BYTE = 1;
+  static constexpr int MOVE_ENABLE_BIT = 3;
 };
 }  // namespace kuka::external::control::kss::mxa
 
