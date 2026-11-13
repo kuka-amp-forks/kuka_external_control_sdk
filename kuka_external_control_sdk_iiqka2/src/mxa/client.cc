@@ -78,6 +78,8 @@ Status Client::Setup()
   {
     group = AXIS_GROUP_REF{};
   }
+  // The KRC may hold a halted program from the last link, which this client cannot see
+  reset_before_start_ = true;
   StartKeepAliveThread();
 
   return {ReturnCode::OK, "MXA client setup succeeded"};
@@ -112,6 +114,8 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
   rsi_start_hold_cycles_ = 0;
   rsi_start_pending_cycles_ = 0;
   rsi_start_confirmed_ = false;
+  stop_message_cycles_ = 0;
+  stop_message_reset_used_ = false;
   rsi_started_ = true;
 
   // Start CMD dispatcher on first start. The keep-alive thread acts on these
@@ -190,6 +194,7 @@ void Client::ResetRSI()
   rsi_start_hold_cycles_ = 0;
   rsi_start_pending_cycles_ = 0;
   rsi_start_confirmed_ = false;
+  pre_start_phase_ = PreStartPhase::NONE;
 }
 
 void Client::ConfirmRsiStart()
@@ -295,6 +300,8 @@ void Client::StartKeepAliveThread()
           // Mark MXA UDP timeout as an error except in the first ticks, since
           // that always occurs
           connected = false;
+          // A cancel in flight is lost with the link, and RSI stops with a $CORRECTION stop
+          reset_before_start_ = true;
           event_handler_->OnError("Keep-alive thread: UDP subscriber receive timed out");
         }
         if (connected)
@@ -422,9 +429,22 @@ void Client::HandleRsiStart()
   // sequence - used to activate AutExt block easier...
   if (start_cmd_dispatcher_)
   {
+    if (!ResetProgramBeforeStart())
+    {
+      return;
+    }
     auto result = mxa_wrapper_.startMxAServer();
     if (result.block_state != BLOCKSTATE::DONE)
     {
+      if (!mxa_wrapper_.autoStartConfirmingStopMessage())
+      {
+        stop_message_cycles_ = 0;
+      }
+      else if (++stop_message_cycles_ >= kStopMessageConfirmCycles && !stop_message_reset_used_)
+      {
+        stop_message_reset_used_ = true;
+        reset_before_start_ = true;
+      }
       return;
     }
     start_cmd_dispatcher_ = false;
@@ -487,6 +507,52 @@ void Client::HandleRsiStart()
       RetryRsiStart("failed with error ID " + std::to_string(process_rsi_res.error_code));
       break;
   }
+}
+
+bool Client::ResetProgramBeforeStart()
+{
+  if (pre_start_phase_ == PreStartPhase::NONE)
+  {
+    if (!reset_before_start_)
+    {
+      return true;
+    }
+    if (!mxa_wrapper_.isInitialized())
+    {
+      return false;
+    }
+    reset_before_start_ = false;
+    mxa_wrapper_.stopAutoStart();
+    pre_start_cycles_ = 0;
+    pre_start_phase_ = PreStartPhase::CANCEL;
+  }
+
+  if (pre_start_phase_ == PreStartPhase::CANCEL)
+  {
+    mxa_wrapper_.moveDisable();
+    const auto result = mxa_wrapper_.cancelProgram();
+    // An error ends the cancel too: the start below still gets its chance
+    if (result.block_state == BLOCKSTATE::ACTIVE)
+    {
+      if (++pre_start_cycles_ < kPreStartCancelTimeoutCycles)
+      {
+        return false;
+      }
+      mxa_wrapper_.stopCancel();
+    }
+    pre_start_cycles_ = 0;
+    pre_start_phase_ = PreStartPhase::WAIT_DISPATCHER_FREE;
+    return false;
+  }
+
+  // startMxAServer takes a running dispatcher as started, so wait until the cancelled one is gone
+  if (mxa_wrapper_.isServerActive() && ++pre_start_cycles_ < kDispatcherFreeTimeoutCycles)
+  {
+    return false;
+  }
+  stop_message_cycles_ = 0;
+  pre_start_phase_ = PreStartPhase::NONE;
+  return true;
 }
 
 // The execute flag is already dropped; the next edge is raised after the backoff

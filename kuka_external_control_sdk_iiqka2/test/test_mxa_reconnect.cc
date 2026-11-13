@@ -18,10 +18,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define private public
@@ -45,6 +47,8 @@ constexpr int kTechFunctionCancel = 3;
 // The read block keeps the link offline for its first 100 cycles
 constexpr int kCyclesToOnline = 150;
 constexpr int kCyclesToStart = 300;
+// The driver's first-read bound, 5000 ms, in 4 ms mxA cycles
+constexpr int kFirstReadBoundCycles = 1250;
 
 int GetEphemeralUdpPort()
 {
@@ -94,6 +98,8 @@ public:
   bool dispatcher_active = false;
   bool drives_powered = true;
   bool motion_enable_message = false;
+  // A $CORRECTION stop: confirming does not clear it, only a program reset does
+  bool correction_stop = false;
   std::vector<Command> commands;
   std::vector<std::vector<uint8_t>> sent;
 
@@ -106,7 +112,7 @@ public:
     SetBit(in, 0, 2, true);  // USER_SAFE
     SetBit(in, 0, 3, drives_powered);
     SetBit(in, 0, 4, true);  // ROB_CAL
-    SetBit(in, 0, 6, motion_enable_message);
+    SetBit(in, 0, 6, motion_enable_message || correction_stop);
     SetBit(in, 1, 1, dispatcher_active);
     SetBit(in, 2, 4, true);  // EXT
     in[4] = heartbeat_;
@@ -125,6 +131,7 @@ public:
       if (tech_function == kTechFunctionCancel)
       {
         dispatcher_active = false;
+        correction_stop = false;
       }
     }
     PutDint(in, 178, command.ORDERID);
@@ -152,7 +159,8 @@ public:
     {
       drives_powered = false;
     }
-    if (Bit(out, 4, 0) && !motion_enable_message && drives_powered && move_enable)
+    if (
+      Bit(out, 4, 0) && !motion_enable_message && !correction_stop && drives_powered && move_enable)
     {
       dispatcher_active = true;
     }
@@ -163,6 +171,13 @@ public:
   {
     dispatcher_active = false;
     motion_enable_message = true;
+  }
+
+  // As on hardware after a link drop during RSI: the dispatcher is halted, not deselected
+  void StopByCorrection()
+  {
+    DropLink();
+    correction_stop = true;
   }
 
 private:
@@ -337,4 +352,130 @@ TEST(MxaReconnect, StartAfterTheStuckClientRunsTheFullAutoStart)
   EXPECT_EQ(krc.commands.back().tech_function, kTechFunctionStart);
   EXPECT_FALSE(client->start_cmd_dispatcher_);
   client->ResetRSI();
+}
+
+namespace
+{
+
+struct StartResult
+{
+  int cancel_cycle = -1;
+  int start_cycle = -1;
+};
+
+// Cycles until the RSI start command reaches the KRC, within the driver's first-read bound
+StartResult RunStart(Client & client, Link & link, FakeKrc & krc)
+{
+  const std::size_t known = krc.commands.size();
+  StartResult result;
+  StartRsi(client);
+  for (int i = 0; i < kFirstReadBoundCycles && result.start_cycle < 0; i++)
+  {
+    link.Cycle();
+    for (std::size_t c = known; c < krc.commands.size(); c++)
+    {
+      if (krc.commands[c].tech_function == kTechFunctionCancel && result.cancel_cycle < 0)
+      {
+        result.cancel_cycle = i;
+      }
+      if (krc.commands[c].tech_function == kTechFunctionStart)
+      {
+        result.start_cycle = i;
+      }
+    }
+  }
+  return result;
+}
+
+bool ExtStartSent(const FakeKrc & krc)
+{
+  for (const auto & telegram : krc.sent)
+  {
+    if (Bit(telegram.data(), 1, 2))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST(MxaCorrectionStop, FirstStartOfANewLinkResetsTheHaltedProgram)
+{
+  FakeKrc krc;
+  krc.StopByCorrection();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+
+  const auto result = RunStart(*client, link, krc);
+
+  ASSERT_GE(result.start_cycle, 0) << "no start within the bound, KRC_AUTOSTART state "
+                                   << client->mxa_wrapper_.mxa_auto_start_.State();
+  ASSERT_GE(result.cancel_cycle, 0);
+  EXPECT_LT(result.cancel_cycle, result.start_cycle);
+  EXPECT_LT(result.start_cycle, Client::kStopMessageConfirmCycles) << "reset only by the fallback";
+  EXPECT_TRUE(krc.dispatcher_active);
+  EXPECT_FALSE(krc.correction_stop);
+  EXPECT_FALSE(ExtStartSent(krc));
+  client->ResetRSI();
+}
+
+TEST(MxaCorrectionStop, StopMessageThatOutlivesTheConfirmIsResetOnce)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  ASSERT_GE(RunStart(*client, link, krc).start_cycle, 0);
+  client->RequestRsiCancel();
+  link.Cycles(Client::kRsiCancelHoldCycles + 10);
+  ASSERT_TRUE(client->IsRsiCancelled());
+
+  // Raised with the link up, so nothing but the stuck confirm reveals it
+  krc.StopByCorrection();
+  link.Cycles(10);
+  const std::size_t known = krc.commands.size();
+  const auto result = RunStart(*client, link, krc);
+
+  ASSERT_GE(result.start_cycle, 0) << "no start within the bound, KRC_AUTOSTART state "
+                                   << client->mxa_wrapper_.mxa_auto_start_.State();
+  ASSERT_GE(result.cancel_cycle, 0);
+  int cancels = 0;
+  for (std::size_t c = known; c < krc.commands.size(); c++)
+  {
+    cancels += krc.commands[c].tech_function == kTechFunctionCancel ? 1 : 0;
+  }
+  EXPECT_EQ(cancels, 1);
+  EXPECT_TRUE(krc.dispatcher_active);
+  EXPECT_FALSE(ExtStartSent(krc));
+  client->ResetRSI();
+}
+
+TEST(MxaCorrectionStop, LostLinkArmsAResetBeforeTheNextStart)
+{
+  const int port = GetEphemeralUdpPort();
+  Client client("127.0.0.1", port);
+  client.RegisterEventHandler(std::make_unique<QuietEventHandler>());
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+  client.reset_before_start_ = false;
+
+  // One telegram brings the link up; the silence after it is the loss
+  const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = htons(port);
+  uint8_t telegram[kTelegramSize] = {};
+  sendto(fd, telegram, sizeof(telegram), 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+  close(fd);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!client.reset_before_start_ && std::chrono::steady_clock::now() < deadline)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(client.reset_before_start_);
 }

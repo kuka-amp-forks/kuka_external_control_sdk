@@ -92,6 +92,10 @@ private:
   // One keep-alive cycle of the dispatcher start and the RSI start command
   void HandleRsiStart();
 
+  // Cancels the robot program before a dispatcher start when one is due.
+  // Returns true once the dispatcher start may run
+  bool ResetProgramBeforeStart();
+
   // Count a failed start attempt: re-issue after the backoff, or report
   void RetryRsiStart(const std::string & reason);
 
@@ -146,6 +150,25 @@ private:
   std::atomic<int> rsi_start_hold_cycles_{0};
   std::atomic<int> rsi_start_pending_cycles_{0};
   std::atomic<bool> rsi_start_confirmed_{false};
+
+  // A $CORRECTION stop is cleared only by a program reset, so the dispatcher
+  // start cancels the program first after a new or a lost link
+  std::atomic<bool> reset_before_start_{false};
+  enum class PreStartPhase
+  {
+    NONE,
+    CANCEL,
+    WAIT_DISPATCHER_FREE
+  };
+  std::atomic<PreStartPhase> pre_start_phase_{PreStartPhase::NONE};
+  std::atomic<int> pre_start_cycles_{0};
+  // Above the longest cancel seen on hardware
+  static constexpr int kPreStartCancelTimeoutCycles = 125;
+  static constexpr int kDispatcherFreeTimeoutCycles = 125;
+  // Well above a healthy confirm; with one reset per start this fits the driver's first-read bound
+  static constexpr int kStopMessageConfirmCycles = 250;
+  std::atomic<int> stop_message_cycles_{0};
+  std::atomic<bool> stop_message_reset_used_{false};
   std::atomic<bool> rsi_started_{false};
   std::atomic<bool> rsi_started_notification_sent_{false};
   std::atomic<bool> connected_notification_sent_{false};

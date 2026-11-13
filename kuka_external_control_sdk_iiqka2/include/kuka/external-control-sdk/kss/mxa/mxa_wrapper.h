@@ -168,6 +168,19 @@ public:
     mxa_auto_start_.OnCycle();
   }
 
+  // KRC_AUTOSTART is confirming a stop message; a message that needs a program reset stays here
+  bool autoStartConfirmingStopMessage() const
+  {
+    return mxa_auto_start_.EXECUTERESET && mxa_auto_start_.State() == AUTOSTART_STATE_CONFMESS;
+  }
+
+  // Abandon a cancel that was not reported in time
+  void stopCancel()
+  {
+    mxa_tech_function_s_.EXECUTECMD = false;
+    mxa_tech_function_s_.OnCycle();
+  }
+
   // Drop the execute flag so the next processRSI call makes a new rising edge
   void resetRSI()
   {
@@ -396,6 +409,7 @@ private:
   std::array<float, TECH_FUNC_PARAM_COUNT + 1> real_array_;
 
   static constexpr int DEFAULT_AXISGROUP_ID = 1;
+  static constexpr int AUTOSTART_STATE_CONFMESS = 3;
   // Where KRC_WRITEAXISGROUP puts MOVE_ENABLE in the telegram
   static constexpr int MOVE_ENABLE_BYTE = 1;
   static constexpr int MOVE_ENABLE_BIT = 3;
