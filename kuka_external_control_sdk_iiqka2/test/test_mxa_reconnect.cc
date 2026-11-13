@@ -789,3 +789,14 @@ TEST(MxaConfirm, ConfirmStartsWithAnEdgeWhenTheBitIsAlreadyHigh)
   EXPECT_FALSE(client->stop_message_reset_used_) << "confirmed only after the fallback reset";
   client->ResetRSI();
 }
+
+TEST(MxaClientInstance, OnlyOneClientIsSetUpAtATime)
+{
+  auto first = std::make_unique<Client>("127.0.0.1", GetEphemeralUdpPort());
+  ASSERT_EQ(first->Setup().return_code, ReturnCode::OK);
+  Client second("127.0.0.1", GetEphemeralUdpPort());
+  EXPECT_EQ(second.Setup().return_code, ReturnCode::ERROR);
+
+  first.reset();
+  EXPECT_EQ(second.Setup().return_code, ReturnCode::OK);
+}

@@ -36,7 +36,9 @@
 namespace kuka::external::control::kss::mxa
 {
 
-// Class for communicating with the KRC via MXA
+// Class for communicating with the KRC via MXA. The mxA blocks keep their link
+// state in one process-wide axis group array, so only one Client may be set up
+// in a process at a time; Setup refuses a second one
 class Client
 {
 public:
@@ -153,6 +155,9 @@ private:
   std::atomic<int> rsi_start_hold_cycles_{0};
   std::atomic<int> rsi_start_pending_cycles_{0};
   std::atomic<bool> rsi_start_confirmed_{false};
+
+  static std::atomic<bool> instance_active_;
+  bool owns_instance_ = false;
 
   // Last order id of any client in this process
   static std::atomic<PLCIEC::DINT> last_order_id_;

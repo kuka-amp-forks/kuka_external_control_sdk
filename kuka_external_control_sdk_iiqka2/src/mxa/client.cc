@@ -24,6 +24,7 @@ namespace kuka::external::control::kss::mxa
 {
 
 std::atomic<PLCIEC::DINT> Client::last_order_id_{0};
+std::atomic<bool> Client::instance_active_{false};
 
 Client::Client(const std::string & controller_ip, int client_port)
 {
@@ -60,10 +61,24 @@ Client::~Client()
     keep_alive_thread_.join();
   }
   ContinueOrderIds();
+  if (owns_instance_)
+  {
+    instance_active_ = false;
+  }
 }
 
 Status Client::Setup()
 {
+  if (!owns_instance_)
+  {
+    bool expected = false;
+    if (!instance_active_.compare_exchange_strong(expected, true))
+    {
+      return {ReturnCode::ERROR, "Another MXA client is set up in this process"};
+    }
+    owns_instance_ = true;
+  }
+
   auto pub_setup_ret = udp_publisher_->Setup();
   if (pub_setup_ret != os::core::udp::communication::Publisher::ErrorCode::kSuccess)
   {
