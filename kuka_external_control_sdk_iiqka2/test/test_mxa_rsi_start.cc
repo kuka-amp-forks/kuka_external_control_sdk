@@ -490,6 +490,40 @@ TEST_F(MxaRsiStart, SentMoveEnableIsTheTelegramBitNotTheInput)
   EXPECT_EQ(telegram[1] & (1 << 3), 0);
 }
 
+// As on hardware: a dispatcher start stuck on a stop message, a cancel, a new start
+TEST_F(MxaRsiStart, CancelDuringADispatcherStartAbandonsIt)
+{
+  auto & group = KRC_AXISGROUPREFARR[kAxisGroup];
+  group.AUTEXTSTATE.PRO_ACT = false;
+  group.AUTEXTSTATE.STOPMESS = true;
+  StartRsi();
+  Cycles(10);
+  ASSERT_TRUE(client_.mxa_wrapper_.mxa_auto_start_.BUSY);
+  ASSERT_FALSE(group.KRCCONTROL.RESET);
+
+  client_.RequestRsiCancel();
+  group.AUTEXTSTATE.STOPMESS = false;
+  for (int i = 0; i < Client::kRsiCancelHoldCycles + 10 && !client_.IsRsiCancelled(); i++)
+  {
+    Cycle();
+    ASSERT_FALSE(group.KRCCONTROL.RESET) << "dispatcher started during the cancel, cycle " << i;
+  }
+  ASSERT_TRUE(client_.IsRsiCancelled());
+  EXPECT_FALSE(client_.mxa_wrapper_.mxa_auto_start_.EXECUTERESET);
+  EXPECT_FALSE(client_.mxa_wrapper_.mxa_auto_start_.BUSY);
+  ASSERT_FALSE(group.AUTEXTCONTROL.MOVE_ENABLE);
+
+  StartRsi();
+  for (int i = 0; i < 20 && !group.KRCCONTROL.RESET; i++)
+  {
+    Cycle();
+    ASSERT_NE(group.INTFBERRORID, 532) << "KRC_AUTOSTART refused MOVE_ENABLE at cycle " << i;
+  }
+  EXPECT_TRUE(group.KRCCONTROL.RESET);
+  EXPECT_TRUE(group.AUTEXTCONTROL.MOVE_ENABLE);
+  EXPECT_FALSE(group.AUTEXTCONTROL.EXT_START);
+}
+
 TEST_F(MxaRsiStart, StoppedDispatcherIsStartedBeforeTheCommand)
 {
   auto & group = KRC_AXISGROUPREFARR[kAxisGroup];

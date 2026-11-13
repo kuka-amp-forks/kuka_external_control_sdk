@@ -80,6 +80,11 @@ if(BUILD_TESTING)
   )
 
   add_executable(
+    test_mxa_reconnect
+    test/test_mxa_reconnect.cc
+  )
+
+  add_executable(
     test_mxa_telegram_hook
     test/test_mxa_telegram_hook.cc
   )
@@ -110,6 +115,13 @@ if(BUILD_TESTING)
 
   target_link_libraries(
     test_mxa_rsi_start
+    GTest::gtest_main
+    ${target_name}
+    GTest::gtest
+  )
+
+  target_link_libraries(
+    test_mxa_reconnect
     GTest::gtest_main
     ${target_name}
     GTest::gtest
@@ -152,6 +164,11 @@ if(BUILD_TESTING)
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../kuka_external_control_sdk_common/utils/include>"
   )
 
+  target_include_directories(test_mxa_reconnect PUBLIC
+    "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../kuka_external_control_sdk_common/utils/include>"
+  )
+
   target_include_directories(test_mxa_telegram_hook PUBLIC
     "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../kuka_external_control_sdk_common/utils/include>"
@@ -169,6 +186,7 @@ if(BUILD_TESTING)
   target_compile_features(test_iiqka2_message_builder INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_eki_client_parsing INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_mxa_rsi_start INTERFACE cxx_std_17 PRIVATE cxx_std_17)
+  target_compile_features(test_mxa_reconnect INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_mxa_telegram_hook INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_status_update INTERFACE cxx_std_17 PRIVATE cxx_std_17)
   target_compile_features(test_mxa_brake_test_status INTERFACE cxx_std_17 PRIVATE cxx_std_17)
@@ -180,6 +198,7 @@ if(BUILD_TESTING)
   # Both binaries can start a real Client bound to the mxA client's fixed send
   # port, so they share a lock to keep ctest from running them at once
   gtest_discover_tests(test_mxa_rsi_start PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
+  gtest_discover_tests(test_mxa_reconnect PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
   gtest_discover_tests(test_mxa_telegram_hook PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
   gtest_discover_tests(test_mxa_brake_test_status PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
 endif()
