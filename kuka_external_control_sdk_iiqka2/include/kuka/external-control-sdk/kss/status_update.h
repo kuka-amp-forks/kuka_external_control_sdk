@@ -86,6 +86,11 @@ public:
   // telegram, before the status update and whether or not the status changed.
   // Runs on the keep-alive thread: must not block or throw
   virtual void OnTelegramReceived() {}
+
+  // The mxA client calls this on its keep-alive thread once per loop iteration,
+  // whether or not a telegram arrived, so a watchdog can tell that the thread
+  // itself still runs. Runs on the keep-alive thread: must not block or throw
+  virtual void OnKeepAliveCycle() {}
 };
 
 }  // namespace kuka::external::control::kss

@@ -17,7 +17,9 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string_view>
+#include <thread>
 
 #include "kuka/external-control-sdk/common/irobot.h"
 #include "kuka/external-control-sdk/kss/configuration.h"
@@ -77,6 +79,11 @@ public:
   virtual bool IsRsiProgramCancelled() const { return false; }
   // True when a status telegram has arrived but is not received yet
   virtual bool IsStatusTelegramPending() const { return false; }
+  // Native handle of the thread that receives status telegrams, if there is one
+  virtual std::optional<std::thread::native_handle_type> StatusThreadNativeHandle()
+  {
+    return std::nullopt;
+  }
   virtual Status TurnOnDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status TurnOffDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   // Drops the drives-on request without a drives-off, so the next TurnOnDrives is an edge

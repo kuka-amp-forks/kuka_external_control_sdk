@@ -63,6 +63,8 @@ public:
 
   bool IsStatusTelegramPending() const override;
 
+  std::optional<std::thread::native_handle_type> StatusThreadNativeHandle() override;
+
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 
   Status RegisterStatusResponseHandler(std::unique_ptr<IStatusUpdateHandler> && handler);
