@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -98,6 +99,35 @@ private:
   std::condition_variable cv;
   int telegrams = 0;
   bool released = false;
+};
+
+// Counts keep-alive cycles and records the thread they run on
+class CycleStatusHandler : public IStatusUpdateHandler
+{
+public:
+  void OnStatusUpdateReceived(const StatusUpdate &) override {}
+  void OnTelegramReceived() override { telegrams++; }
+  void OnKeepAliveCycle() override
+  {
+    if (cycles++ == 0)
+    {
+      std::lock_guard<std::mutex> lk{mtx};
+      thread = pthread_self();
+    }
+  }
+
+  pthread_t Thread()
+  {
+    std::lock_guard<std::mutex> lk{mtx};
+    return thread;
+  }
+
+  std::atomic<int> telegrams{0};
+  std::atomic<int> cycles{0};
+
+private:
+  std::mutex mtx;
+  pthread_t thread{};
 };
 
 bool WaitFor(const std::function<bool()> & condition)
@@ -184,6 +214,44 @@ TEST(MxaTelegramHook, ReportsTelegramPendingUntilReceived)
   hold->Release();
   EXPECT_TRUE(WaitFor([hold] { return hold->Telegrams() == 2; }));
   EXPECT_TRUE(WaitFor([&client] { return !client.IsTelegramPending(); }));
+}
+
+// The cycle hook beats on a silent link too, once per receive timeout, and runs
+// on the thread whose handle the client hands out
+TEST(MxaTelegramHook, KeepAliveCycleRunsWithoutTelegrams)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+
+  Client client("127.0.0.1", kClientPort);
+  EXPECT_FALSE(client.KeepAliveThreadNativeHandle().has_value());
+  auto handler = std::make_unique<CycleStatusHandler>();
+  auto * cycles = handler.get();
+  client.RegisterStatusUpdateHandler(std::move(handler));
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  EXPECT_TRUE(WaitFor([cycles] { return cycles->cycles >= 3; }));
+  EXPECT_EQ(cycles->telegrams, 0);
+
+  const auto handle = client.KeepAliveThreadNativeHandle();
+  ASSERT_TRUE(handle.has_value());
+  EXPECT_NE(pthread_equal(*handle, cycles->Thread()), 0);
+}
+
+// Setup() starts the keep-alive thread before a handler is registered, as the driver's
+// on_configure does; the thread must still pick up the handler and keep cycling with it.
+TEST(MxaTelegramHook, RegisterAfterSetupStillRunsCycles)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+
+  Client client("127.0.0.1", kClientPort);
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  auto handler = std::make_unique<CycleStatusHandler>();
+  auto * cycles = handler.get();
+  client.RegisterStatusUpdateHandler(std::move(handler));
+
+  EXPECT_TRUE(WaitFor([cycles] { return cycles->cycles >= 3; }));
 }
 
 }  // namespace
