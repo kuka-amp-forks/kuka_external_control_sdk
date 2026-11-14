@@ -16,6 +16,7 @@
 #define KUKA__EXTERNAL_CONTROL_SDK__KSS__MXA__MXA_WRAPPER_H_
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include "mxAutomation.h"
 
@@ -63,6 +64,7 @@ public:
     mxa_tech_function_s_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     mxa_read_sys_var_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     krc_error_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
+    message_reset_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     read_mxa_error_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
 
     mxa_tech_function_m_.BOOL_DATA = bool_array_.data();
@@ -112,10 +114,46 @@ public:
   {
     mxa_init_.OnCycle();
 
-    if (!mxa_aut_ext_.PERI_RDY)
+    const bool peri_rdy = mxa_aut_ext_.PERI_RDY;
+    if (peri_rdy && !last_peri_rdy_)
     {
-      mxa_aut_ext_.DRIVES_OFF = true;
+      requested_reset_held_ = false;
     }
+    last_peri_rdy_ = peri_rdy;
+    ApplyDrivesOff(peri_rdy);
+    mxa_aut_ext_.DRIVES_ON = drives_on_requested_;
+
+    if (!link_reset_started_ && isInitialized())
+    {
+      link_reset_started_ = true;
+      link_reset_held_ = true;
+    }
+    link_reset_limit_.IN = link_reset_held_;
+    link_reset_limit_.PT = PLCIEC::MKTIME(1, 0, LINK_RESET_SECONDS);
+    link_reset_limit_.OnCycle();
+    if (link_reset_limit_.Q)
+    {
+      link_reset_held_ = false;
+    }
+    const bool link_reset = link_reset_held_;
+    const bool requested_reset = requested_reset_held_;
+    // The link start's confirm pulses as KRC_ERROR's message reset does, without its DRIVES_ON
+    confirm_on_.IN = link_reset && !confirm_off_.Q;
+    confirm_on_.PT = PLCIEC::MKTIME(1, 200);
+    confirm_on_.OnCycle();
+    confirm_off_.IN = link_reset && confirm_on_.Q;
+    confirm_off_.PT = PLCIEC::MKTIME(1, 100);
+    confirm_off_.OnCycle();
+    bool confirm = (link_reset && !confirm_on_.Q) || requested_reset;
+    // A new request starts with a low telegram, so the KRC sees an edge
+    if (requested_edge_pending_.exchange(false) && confirm_sent_)
+    {
+      confirm = false;
+    }
+    confirm_sent_ = confirm;
+    mxa_aut_ext_.CONF_MESS = confirm;
+    message_reset_.MESSAGERESET = link_reset || requested_reset;
+    message_reset_.OnCycle();
     mxa_aut_ext_.OnCycle();
 
     // Set constant override
@@ -133,7 +171,8 @@ public:
   {
     // KRC_AUTOSTART confirms with its own pulse. Another pulse train ORed into
     // CONF_MESS can keep the bit high through the confirm, and the KRC needs an edge
-    krc_error_.MESSAGERESET = false;
+    link_reset_held_ = false;
+    requested_reset_held_ = false;
     mxa_aut_ext_.CONF_MESS = false;
     mxa_aut_ext_.MOVE_ENABLE = true;
     // KRC_AUTOSTART checks the written MOVE_ENABLE, which a cancel left off this cycle
@@ -237,10 +276,12 @@ public:
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
   }
 
-  void resetErrors()
+  // Holds KRC_MESSAGERESET and CONF_MESS high, never DRIVES_ON, starting with a low CONF_MESS
+  // telegram if it is high, until PERI_RDY rises, the drives-off or the next dispatcher start
+  void requestMessageReset()
   {
-    krc_error_.MESSAGERESET = true;
-    krc_error_.OnCycle();
+    requested_edge_pending_ = true;
+    requested_reset_held_ = true;
   }
 
   // Reads ROS runtime version from KRC
@@ -399,17 +440,27 @@ public:
 
   void moveDisable() { mxa_aut_ext_.MOVE_ENABLE = false; }
 
+  // DRIVES_OFF stays low until PERI_RDY has read 0 for a while; also ends any message reset
   void drivesOff()
   {
-    mxa_aut_ext_.DRIVES_ON = false;
-    mxa_aut_ext_.DRIVES_OFF = false;
+    drives_on_requested_ = false;
+    drives_off_cancelled_ = false;
+    drives_off_requested_ = true;
+    link_reset_held_ = false;
+    requested_reset_held_ = false;
   }
 
+  // Ends the link start's message reset
   void drivesOn()
   {
-    mxa_aut_ext_.DRIVES_ON = true;
-    mxa_aut_ext_.DRIVES_OFF = true;
+    drives_off_requested_ = false;
+    drives_off_cancelled_ = true;
+    link_reset_held_ = false;
+    drives_on_requested_ = true;
   }
+
+  // Drops DRIVES_ON only, so a following drivesOn is an edge; a power-up in progress goes on
+  void dropDrivesOn() { drives_on_requested_ = false; }
 
 private:
   KRC_READAXISGROUP krc_read_;
@@ -420,6 +471,53 @@ private:
   KRC_AUTOMATICEXTERNAL mxa_aut_ext_;
   KRC_AUTOSTART mxa_auto_start_;
   KRC_ERROR krc_error_;
+  KRC_MESSAGERESET message_reset_;
+  // A drives-off holds DRIVES_OFF low for at least this many telegrams, and until PERI_RDY has read
+  // 0 for as many in a row, so a power-up the KRC already accepted is stopped too
+  static constexpr int DRIVES_OFF_MIN_CYCLES = 10;
+  // Long enough for the link start to confirm the KRC's messages, short enough that a component
+  // left unactivated does not keep acknowledging them
+  static constexpr int LINK_RESET_SECONDS = 3;
+
+  void ApplyDrivesOff(bool peri_rdy)
+  {
+    if (drives_off_cancelled_.exchange(false))
+    {
+      drives_off_cycles_ = -1;
+    }
+    if (drives_off_requested_.exchange(false))
+    {
+      drives_off_cycles_ = 0;
+      peri_off_cycles_ = 0;
+    }
+    if (drives_off_cycles_ >= 0)
+    {
+      ++drives_off_cycles_;
+      peri_off_cycles_ = peri_rdy ? 0 : peri_off_cycles_ + 1;
+      if (drives_off_cycles_ > DRIVES_OFF_MIN_CYCLES && peri_off_cycles_ > DRIVES_OFF_MIN_CYCLES)
+      {
+        drives_off_cycles_ = -1;
+      }
+    }
+    mxa_aut_ext_.DRIVES_OFF = drives_off_cycles_ < 0;
+  }
+
+  // Written by the client's thread, applied by mxACycle on the keep-alive thread
+  std::atomic<bool> drives_on_requested_{false};
+  std::atomic<bool> drives_off_requested_{false};
+  std::atomic<bool> drives_off_cancelled_{false};
+  std::atomic<bool> link_reset_held_{false};
+  std::atomic<bool> requested_reset_held_{false};
+  std::atomic<bool> requested_edge_pending_{false};
+  // Keep-alive thread only
+  bool last_peri_rdy_ = false;
+  int drives_off_cycles_ = -1;
+  int peri_off_cycles_ = 0;
+  bool link_reset_started_ = false;
+  bool confirm_sent_ = false;
+  PLCIEC::TON confirm_on_;
+  PLCIEC::TON confirm_off_;
+  PLCIEC::TON link_reset_limit_;
   KRC_READMXAERROR read_mxa_error_;
   KRC_SETOVERRIDE mxa_set_override_;
   KRC_TECHFUNCTION mxa_tech_function_m_;

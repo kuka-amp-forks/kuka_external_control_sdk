@@ -70,6 +70,10 @@ public:
   virtual bool IsStatusTelegramPending() const { return false; }
   virtual Status TurnOnDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status TurnOffDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
+  // Drops the drives-on request without a drives-off, so the next TurnOnDrives is an edge
+  virtual Status DropDrivesOn() { return {ReturnCode::UNSUPPORTED, error_text}; }
+  // Resets and confirms the controller's messages, which can keep the drives from switching on
+  virtual Status ResetMessages() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status SetCycleTime(CycleTime cycle_time)
   {
     return {ReturnCode::UNSUPPORTED, error_text};
