@@ -112,6 +112,7 @@ Status Robot::SendControlSignal()
     return {ReturnCode::ERROR, "Parsing control signal to proper XML format failed"};
   }
 
+  last_sent_xml_ = ctr_signal_xml.value();
   if (!endpoint_.MessageSend(ctr_signal_xml.value()))
   {
     return {ReturnCode::ERROR, "Sending RSI control signal failed"};

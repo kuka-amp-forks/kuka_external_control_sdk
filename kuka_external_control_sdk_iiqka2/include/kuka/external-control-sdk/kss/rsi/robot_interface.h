@@ -17,6 +17,7 @@
 
 #include <functional>
 #include <memory>
+#include <string_view>
 
 #include "kuka/external-control-sdk/common/irobot.h"
 #include "kuka/external-control-sdk/kss/configuration.h"
@@ -56,6 +57,12 @@ public:
   Status ResetControlSignal() override;
   // Drops the queued RSI packets and an unanswered one without waiting for the controller to stop
   virtual Status ResetEndpoint();
+
+  // The raw XML of the last packet received, also when parsing it failed
+  std::string_view GetLastReceivedXml() { return endpoint_.GetReceivedMessage(); }
+
+  // The raw XML of the last command sent; valid until the next command is built
+  std::string_view GetLastSentXml() const { return last_sent_xml_; }
   BaseMotionState & GetLastMotionState() override;
 
   // TODO(Svastits) add to documentation that other commands could come in between the Stop and
@@ -103,6 +110,7 @@ protected:
   static constexpr int kStopReceiveTimeoutMs = 40;
 
   Endpoint endpoint_;
+  std::string_view last_sent_xml_;
 
   // Members and methods for implementing control
 private:
