@@ -38,6 +38,8 @@ public:  // <operations>
   virtual ErrorCode ReceiveRequest();
   virtual ErrorCode ReceiveRequestOrTimeout(std::chrono::microseconds recv_timeout);
   virtual ErrorCode EmptyBuffer();
+  // Drops what is queued now, without EmptyBuffer's wait for the sender to go quiet
+  ErrorCode EmptyBufferNow();
   virtual ErrorCode SendReply(uint8_t * reply_msg_data, size_t reply_msg_size);
 
 public:  // <properties>

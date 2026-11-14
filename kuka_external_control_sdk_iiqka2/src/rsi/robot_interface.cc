@@ -147,6 +147,12 @@ Status Robot::ResetControlSignal()
   return {ReturnCode::OK, "Control signal has been reset"};
 }
 
+Status Robot::ResetEndpoint()
+{
+  return endpoint_.ResetNow() ? Status{ReturnCode::OK, "RSI endpoint reset"}
+                              : Status{ReturnCode::ERROR, "Emptying the RSI receive buffer failed"};
+}
+
 BaseMotionState & Robot::GetLastMotionState() { return last_motion_state_; }
 
 Status Robot::UpdateMotionState(std::string_view xml_str)

@@ -54,6 +54,8 @@ public:
 
   BaseControlSignal & GetControlSignal() override;
   Status ResetControlSignal() override;
+  // Drops the queued RSI packets and an unanswered one without waiting for the controller to stop
+  virtual Status ResetEndpoint();
   BaseMotionState & GetLastMotionState() override;
 
   // TODO(Svastits) add to documentation that other commands could come in between the Stop and

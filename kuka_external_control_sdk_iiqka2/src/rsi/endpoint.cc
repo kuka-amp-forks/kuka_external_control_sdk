@@ -70,6 +70,13 @@ void Endpoint::EmptyBuffer()
 
 bool Endpoint::IsRequestActive() { return replier_socket_->IsRequestActive(); }
 
+bool Endpoint::ResetNow()
+{
+  replier_socket_->Reset();
+  return replier_socket_->EmptyBufferNow() ==
+         os::core::udp::communication::Replier::ErrorCode::kSuccess;
+}
+
 void Endpoint::Reset()
 {
   EmptyBuffer();
