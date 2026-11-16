@@ -83,15 +83,18 @@ Status Client::Setup()
   if (pub_setup_ret != os::core::udp::communication::Publisher::ErrorCode::kSuccess)
   {
     return {
-      ReturnCode::ERROR, "UDP publisher setup failed with code " + static_cast<int>(pub_setup_ret)};
+      ReturnCode::ERROR, (std::string("UDP publisher setup failed with code ") +
+                          std::to_string(static_cast<int>(pub_setup_ret)))
+                           .c_str()};
   }
 
   auto sub_setup_ret = udp_subscriber_->Setup();
   if (sub_setup_ret != os::core::udp::communication::Publisher::ErrorCode::kSuccess)
   {
     return {
-      ReturnCode::ERROR,
-      "UDP subscriber setup failed with code " + static_cast<int>(sub_setup_ret)};
+      ReturnCode::ERROR, (std::string("UDP subscriber setup failed with code ") +
+                          std::to_string(static_cast<int>(sub_setup_ret)))
+                           .c_str()};
   }
 
   // The mxA blocks keep their link state here, so a new link must not inherit the last client's
