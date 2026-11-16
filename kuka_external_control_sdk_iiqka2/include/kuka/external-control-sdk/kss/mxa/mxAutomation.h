@@ -1452,6 +1452,8 @@ public:
    {
    }
 
+   PLCIEC::DINT State() const { return M_STATE; }
+
 public:
    void OnCycle()
    {

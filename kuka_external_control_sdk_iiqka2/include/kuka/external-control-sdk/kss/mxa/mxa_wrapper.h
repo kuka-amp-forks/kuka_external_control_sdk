@@ -16,6 +16,7 @@
 #define KUKA__EXTERNAL_CONTROL_SDK__KSS__MXA__MXA_WRAPPER_H_
 
 #include <array>
+#include <cstdint>
 #include "mxAutomation.h"
 
 namespace kuka::external::control::kss::mxa
@@ -130,7 +131,13 @@ public:
   // Start robot interpreter of mxA
   BLOCKRESULT startMxAServer()
   {
+    // KRC_AUTOSTART confirms with its own pulse. Another pulse train ORed into
+    // CONF_MESS can keep the bit high through the confirm, and the KRC needs an edge
+    krc_error_.MESSAGERESET = false;
+    mxa_aut_ext_.CONF_MESS = false;
     mxa_aut_ext_.MOVE_ENABLE = true;
+    // KRC_AUTOSTART checks the written MOVE_ENABLE, which a cancel left off this cycle
+    mxa_aut_ext_.OnCycle();
 
     if (mxa_auto_start_.RESETVALID)
     {
@@ -150,13 +157,51 @@ public:
     {
       mxa_auto_start_.EXECUTERESET = false;
       mxa_auto_start_.OnCycle();
-      // Reset message reset flag after successful server start to avoid getting
-      // it stuck
-      krc_error_.MESSAGERESET = false;
-      mxa_aut_ext_.CONF_MESS = false;
       return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::DONE));
     }
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
+  }
+
+  // Abandon a dispatcher start in flight, so the next start runs KRC_AUTOSTART from the beginning
+  void stopAutoStart()
+  {
+    mxa_auto_start_.EXECUTERESET = false;
+    mxa_auto_start_.OnCycle();
+  }
+
+  // Raises the last used order id past every id the KRC reports a state for, and
+  // past last_used. The KRC keeps those states across links and does not run a
+  // command whose id it already holds
+  void continueOrderIds(PLCIEC::DINT & last_used)
+  {
+    auto & group = KRC_AXISGROUPREFARR[DEFAULT_AXISGROUP_ID];
+    PLCIEC::DINT last = group.LASTORDERID;
+    if (orderIdAhead(last_used, last))
+    {
+      last = last_used;
+    }
+    for (int i = 1; i <= STATE_RETURN_SLOTS; i++)
+    {
+      if (orderIdAhead(group.CMDSTATE.STATERETURN[i].SR_ORDERID, last))
+      {
+        last = group.CMDSTATE.STATERETURN[i].SR_ORDERID;
+      }
+    }
+    group.LASTORDERID = last;
+    last_used = last;
+  }
+
+  // KRC_AUTOSTART is confirming a stop message; a message that needs a program reset stays here
+  bool autoStartConfirmingStopMessage() const
+  {
+    return mxa_auto_start_.EXECUTERESET && mxa_auto_start_.State() == AUTOSTART_STATE_CONFMESS;
+  }
+
+  // Abandon a cancel that was not reported in time
+  void stopCancel()
+  {
+    mxa_tech_function_s_.EXECUTECMD = false;
+    mxa_tech_function_s_.OnCycle();
   }
 
   // Drop the execute flag so the next processRSI call makes a new rising edge
@@ -300,6 +345,16 @@ public:
 
   bool robotStopped() const { return mxa_aut_ext_.ROB_STOPPED; }
 
+  bool stopMessageActive() const { return mxa_aut_ext_.STOPMESS; }
+
+  // The write block gates MOVE_ENABLE on the link and on any latched error, so
+  // the sent bit can differ from the Automatic External input
+  bool moveEnableSent() const
+  {
+    return krc_write_.KRC4_OUTPUT != nullptr &&
+           IsBitSet(krc_write_.KRC4_OUTPUT[MOVE_ENABLE_BYTE], MOVE_ENABLE_BIT);
+  }
+
   // The brake-test signals are not outputs of the Automatic External block, so
   // they are read from the axis group state the read block fills every cycle
   bool brakeTestRequested() const
@@ -377,6 +432,32 @@ private:
   std::array<float, TECH_FUNC_PARAM_COUNT + 1> real_array_;
 
   static constexpr int DEFAULT_AXISGROUP_ID = 1;
+  static constexpr int AUTOSTART_STATE_CONFMESS = 3;
+  static constexpr int STATE_RETURN_SLOTS = 10;
+  // MXA_EXECUTECOMMAND hands out 1 up to this id, then starts again at 1
+  static constexpr PLCIEC::DINT MAX_ORDER_ID = 2147483646;
+
+  // Whether id comes after reference on the wrapping id circle, by less than half of it
+  static bool orderIdAhead(PLCIEC::DINT id, PLCIEC::DINT reference)
+  {
+    if (id <= 0 || id > MAX_ORDER_ID)
+    {
+      return false;
+    }
+    if (reference <= 0)
+    {
+      return true;
+    }
+    int64_t distance = static_cast<int64_t>(id) - reference;
+    if (distance < 0)
+    {
+      distance += MAX_ORDER_ID;
+    }
+    return distance > 0 && distance < MAX_ORDER_ID / 2;
+  }
+  // Where KRC_WRITEAXISGROUP puts MOVE_ENABLE in the telegram
+  static constexpr int MOVE_ENABLE_BYTE = 1;
+  static constexpr int MOVE_ENABLE_BIT = 3;
 };
 }  // namespace kuka::external::control::kss::mxa
 
