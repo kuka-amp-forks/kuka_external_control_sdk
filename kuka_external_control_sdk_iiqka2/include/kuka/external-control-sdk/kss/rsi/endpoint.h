@@ -48,6 +48,8 @@ public:
   bool IsRequestActive();
 
   void Reset();
+  // Reset without waiting for the sender to go quiet
+  bool ResetNow();
 
 private:
   void EmptyBuffer();

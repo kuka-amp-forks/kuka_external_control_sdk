@@ -77,8 +77,18 @@ public:
   // Turn on drives
   void TurnOnDrives();
 
-  // Turn off drives
+  // Turn off drives: DRIVES_OFF stays low until PERI_RDY has read 0 for a while
   void TurnOffDrives();
+
+  // Drops DRIVES_ON so the next TurnOnDrives is an edge; unlike TurnOffDrives, a power-up the KRC
+  // has accepted goes on
+  void DropDrivesOn();
+
+  // Holds KRC_MESSAGERESET and CONF_MESS high, never DRIVES_ON, with a low CONF_MESS telegram
+  // first if it was high, until PERI_RDY rises, TurnOffDrives or StartRSI. Once the link is
+  // initialized it holds KRC_MESSAGERESET and pulses CONF_MESS by itself for a bounded time, ending
+  // early at the first TurnOnDrives, TurnOffDrives or StartRSI
+  void ResetMessages();
 
   // Registers an event handler
   Status RegisterEventHandler(std::unique_ptr<EventHandler> && event_handler);

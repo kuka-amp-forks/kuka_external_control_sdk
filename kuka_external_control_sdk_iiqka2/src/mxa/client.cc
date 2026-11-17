@@ -235,6 +235,10 @@ void Client::TurnOnDrives() { mxa_wrapper_.drivesOn(); }
 
 void Client::TurnOffDrives() { mxa_wrapper_.drivesOff(); }
 
+void Client::DropDrivesOn() { mxa_wrapper_.dropDrivesOn(); }
+
+void Client::ResetMessages() { mxa_wrapper_.requestMessageReset(); }
+
 Status Client::RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension)
 {
   if (extension == nullptr)
@@ -391,12 +395,6 @@ void Client::StartKeepAliveThread()
           }
 
           active_error_code_ = error_code;
-
-          // Reset initial error messages
-          if (tick <= kInitTimeoutTicks + 1)
-          {
-            mxa_wrapper_.resetErrors();
-          }
 
           // ----------------------------------------------------------------------------
           HandleRsiStart();

@@ -112,6 +112,7 @@ Status Robot::SendControlSignal()
     return {ReturnCode::ERROR, "Parsing control signal to proper XML format failed"};
   }
 
+  last_sent_xml_ = ctr_signal_xml.value();
   if (!endpoint_.MessageSend(ctr_signal_xml.value()))
   {
     return {ReturnCode::ERROR, "Sending RSI control signal failed"};
@@ -145,6 +146,12 @@ Status Robot::ResetControlSignal()
   }
 
   return {ReturnCode::OK, "Control signal has been reset"};
+}
+
+Status Robot::ResetEndpoint()
+{
+  return endpoint_.ResetNow() ? Status{ReturnCode::OK, "RSI endpoint reset"}
+                              : Status{ReturnCode::ERROR, "Emptying the RSI receive buffer failed"};
 }
 
 BaseMotionState & Robot::GetLastMotionState() { return last_motion_state_; }

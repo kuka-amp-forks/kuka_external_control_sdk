@@ -128,6 +128,18 @@ Status Robot::TurnOffDrives()
   return {ReturnCode::OK};
 }
 
+Status Robot::DropDrivesOn()
+{
+  client_.DropDrivesOn();
+  return {ReturnCode::OK};
+}
+
+Status Robot::ResetMessages()
+{
+  client_.ResetMessages();
+  return {ReturnCode::OK};
+}
+
 Status Robot::SetCycleTime(CycleTime cycle_time)
 {
   cycle_time_ = cycle_time;

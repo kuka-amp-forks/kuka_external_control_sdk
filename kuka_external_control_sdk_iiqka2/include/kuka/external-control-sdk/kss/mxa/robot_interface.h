@@ -47,6 +47,10 @@ public:
 
   Status TurnOffDrives() override;
 
+  Status DropDrivesOn() override;
+
+  Status ResetMessages() override;
+
   Status SetCycleTime(CycleTime cycle_time) override;
 
   // Blocks until the controller confirms the cancel; needs the mxA link up.
