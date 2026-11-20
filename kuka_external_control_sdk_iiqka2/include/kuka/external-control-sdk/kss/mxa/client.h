@@ -67,6 +67,10 @@ public:
   // True when a telegram has arrived that the keep-alive thread has not received yet
   bool IsTelegramPending() const;
 
+  // Native handle of the keep-alive thread, to set its scheduling and affinity;
+  // empty before Setup. Valid only while the thread is running.
+  std::optional<std::thread::native_handle_type> KeepAliveThreadNativeHandle();
+
   // Reset class to be able to start RSI again
   void ResetRSI();
 
@@ -95,6 +99,7 @@ public:
 
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 
+  // Re-registering a handler while the keep-alive thread is running is unsupported.
   Status RegisterStatusUpdateHandler(std::unique_ptr<IStatusUpdateHandler> && handler);
 
 private:
@@ -209,7 +214,10 @@ private:
 
   std::unique_ptr<IEventHandlerExtension> event_handler_extension_;
 
+  // Owns the handler; the keep-alive thread reads status_update_handler_ptr_ instead, since
+  // RegisterStatusUpdateHandler runs on the configuring thread after Setup() already started it.
   std::unique_ptr<IStatusUpdateHandler> status_update_handler_;
+  std::atomic<IStatusUpdateHandler *> status_update_handler_ptr_{nullptr};
 
   CycleTime cycle_time_ = CycleTime::UNSPECIFIED;
   ControlMode control_mode_ = ControlMode::UNSPECIFIED;

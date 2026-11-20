@@ -186,4 +186,17 @@ TEST(MxaTelegramHook, ReportsTelegramPendingUntilReceived)
   EXPECT_TRUE(WaitFor([&client] { return !client.IsTelegramPending(); }));
 }
 
+// The native handle is available once the keep-alive thread is running, with or without a
+// handler registered.
+TEST(MxaTelegramHook, ExposesKeepAliveThreadNativeHandle)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+
+  Client client("127.0.0.1", kClientPort);
+  EXPECT_FALSE(client.KeepAliveThreadNativeHandle().has_value());
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  EXPECT_TRUE(WaitFor([&client] { return client.KeepAliveThreadNativeHandle().has_value(); }));
+}
+
 }  // namespace
