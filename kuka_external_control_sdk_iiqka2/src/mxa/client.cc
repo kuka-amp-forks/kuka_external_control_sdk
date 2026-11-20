@@ -447,11 +447,6 @@ void Client::StartKeepAliveThread()
         {
           tick++;
         }
-
-        if (status_handler != nullptr)
-        {
-          status_handler->OnKeepAliveCycle();
-        }
       }
     });
 }
