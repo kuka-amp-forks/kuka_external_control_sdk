@@ -1150,3 +1150,95 @@ TEST(MxaDrivesOn, DrivesOnDuringAHeldDrivesOffNeverRacesAnInvalidEdge)
   EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_OFF);
   EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_ON);
 }
+
+class MxaRequestedReset : public ::testing::Test
+{
+protected:
+  void SetUp() override { KRC_AXISGROUPREFARR[kAxisGroup].INTFBERRORID = 0; }
+};
+
+// With PERI_RDY already high, no rising edge ends the reset
+TEST_F(MxaRequestedReset, EndsAfterABoundEvenWithPeriRdyAlreadyHigh)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToStart; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(krc.drives_powered) << "PERI_RDY must already be high entering the request";
+
+  client->ResetMessages();
+  cycle();
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "MESSAGERESET not sent";
+
+  // Still short of the bound, at about 2.9 s of fake time since the request
+  for (int i = 0; i < 724; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset ended before its bound, at " << fake_now_ms << " ms";
+
+  for (int i = 0; i < 300; i++)
+  {
+    cycle();
+  }
+  ASSERT_FALSE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset never ended with PERI_RDY already high";
+
+  KRC_AXISGROUPREFARR[kAxisGroup].INTFBERRORID = 529;
+  cycle();
+  EXPECT_EQ(client->mxa_wrapper_.read_mxa_error_.ERRORID, 529)
+    << "mxA error id still masked once the reset has ended";
+}
+
+TEST_F(MxaRequestedReset, ARequestAfterExpiryGetsAFreshEdge)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToStart; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(krc.drives_powered);
+
+  client->ResetMessages();
+  cycle();
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "MESSAGERESET not sent";
+
+  // Still short of the bound, at about 2.9 s of fake time since the request
+  for (int i = 0; i < 724; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset ended before its bound, at " << fake_now_ms << " ms";
+
+  for (int i = 0; i < 300; i++)
+  {
+    cycle();
+  }
+  ASSERT_FALSE(Bit(krc.sent.back().data(), 1, 4)) << "first request never expired";
+
+  client->ResetMessages();
+  cycle();
+  EXPECT_TRUE(Bit(krc.sent.back().data(), 1, 4))
+    << "a request after expiry sent no new CONF_MESS edge";
+}

@@ -135,6 +135,13 @@ public:
     {
       link_reset_held_ = false;
     }
+    requested_reset_limit_.IN = requested_reset_held_;
+    requested_reset_limit_.PT = PLCIEC::MKTIME(1, 0, REQUESTED_RESET_SECONDS);
+    requested_reset_limit_.OnCycle();
+    if (requested_reset_limit_.Q)
+    {
+      requested_reset_held_ = false;
+    }
     const bool link_reset = link_reset_held_;
     const bool requested_reset = requested_reset_held_;
     // The link start's confirm pulses as KRC_ERROR's message reset does, without its DRIVES_ON
@@ -277,7 +284,8 @@ public:
   }
 
   // Holds KRC_MESSAGERESET and CONF_MESS high, never DRIVES_ON, starting with a low CONF_MESS
-  // telegram if it is high, until PERI_RDY rises, the drives-off or the next dispatcher start
+  // telegram if it is high, until PERI_RDY rises, REQUESTED_RESET_SECONDS elapses, the
+  // drives-off, or the next dispatcher start
   void requestMessageReset()
   {
     requested_edge_pending_ = true;
@@ -478,6 +486,8 @@ private:
   // Long enough for the link start to confirm the KRC's messages, short enough that a component
   // left unactivated does not keep acknowledging them
   static constexpr int LINK_RESET_SECONDS = 3;
+  // Bounds a requested reset, since no rising edge ever ends it if PERI_RDY is already high
+  static constexpr int REQUESTED_RESET_SECONDS = 3;
 
   void ApplyDrivesOff(bool peri_rdy)
   {
@@ -521,6 +531,7 @@ private:
   PLCIEC::TON confirm_on_;
   PLCIEC::TON confirm_off_;
   PLCIEC::TON link_reset_limit_;
+  PLCIEC::TON requested_reset_limit_;
   KRC_READMXAERROR read_mxa_error_;
   KRC_SETOVERRIDE mxa_set_override_;
   KRC_TECHFUNCTION mxa_tech_function_m_;
