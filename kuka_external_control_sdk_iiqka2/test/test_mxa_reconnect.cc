@@ -213,8 +213,8 @@ public:
     }
     // The KRC confirms on the rising edge
     confirm_last_ = Bit(out, 1, 4);
-    // The KRC switches on at a DRIVES_ON rising edge only
-    if (Bit(out, 1, 6) && !drives_on_last_ && !error_message)
+    // The KRC switches on at a DRIVES_ON rising edge only, and ignores one while DRIVES_OFF is low
+    if (Bit(out, 1, 6) && !drives_on_last_ && !error_message && Bit(out, 1, 5))
     {
       if (power_up_cycles > 0)
       {
@@ -1117,4 +1117,36 @@ TEST(MxaDrivesOn, LinkStartConfirmEndsByItself)
     ASSERT_FALSE(Bit(krc.sent[i].data(), 4, 5)) << "MESSAGERESET in telegram " << i;
     ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 4)) << "CONF_MESS in telegram " << i;
   }
+}
+
+// drivesOn() landing between ApplyDrivesOff() and the DRIVES_ON assignment of the same
+// mxACycle must not raise DRIVES_ON on a telegram that still carries DRIVES_OFF low
+TEST(MxaDrivesOn, DrivesOnDuringAHeldDrivesOffNeverRacesAnInvalidEdge)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+
+  auto & wrapper = client->mxa_wrapper_;
+  client->TurnOffDrives();
+  link.Cycles(2);
+  ASSERT_FALSE(wrapper.mxa_aut_ext_.DRIVES_OFF) << "drives-off not held yet";
+
+  // ApplyDrivesOff() already ran this cycle on the stale drives_off_cycles_ when the
+  // client thread's drivesOn() lands, setting drives_on_requested_ before ApplyDrivesOn() runs
+  wrapper.ApplyDrivesOff(/*peri_rdy=*/false);
+  client->TurnOnDrives();
+  wrapper.ApplyDrivesOn();
+
+  EXPECT_FALSE(wrapper.mxa_aut_ext_.DRIVES_ON)
+    << "DRIVES_ON raised in a telegram that still carries DRIVES_OFF low";
+
+  // The next cycle carries DRIVES_OFF high (ApplyDrivesOff() now sees the cancel) and a
+  // clean DRIVES_ON edge, which is what the KRC actually switches on from
+  wrapper.ApplyDrivesOff(/*peri_rdy=*/false);
+  wrapper.ApplyDrivesOn();
+  EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_OFF);
+  EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_ON);
 }

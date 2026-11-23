@@ -121,7 +121,7 @@ public:
     }
     last_peri_rdy_ = peri_rdy;
     ApplyDrivesOff(peri_rdy);
-    mxa_aut_ext_.DRIVES_ON = drives_on_requested_;
+    ApplyDrivesOn();
 
     if (!link_reset_started_ && isInitialized())
     {
@@ -501,6 +501,9 @@ private:
     }
     mxa_aut_ext_.DRIVES_OFF = drives_off_cycles_ < 0;
   }
+
+  // The KRC ignores a DRIVES_ON rise while DRIVES_OFF is low
+  void ApplyDrivesOn() { mxa_aut_ext_.DRIVES_ON = drives_on_requested_ && drives_off_cycles_ < 0; }
 
   // Written by the client's thread, applied by mxACycle on the keep-alive thread
   std::atomic<bool> drives_on_requested_{false};
