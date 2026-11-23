@@ -63,7 +63,6 @@ public:
     mxa_tech_function_m_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     mxa_tech_function_s_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     mxa_read_sys_var_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
-    krc_error_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     message_reset_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
     read_mxa_error_.AXISGROUPIDX = DEFAULT_AXISGROUP_ID;
 
@@ -169,7 +168,6 @@ public:
 
     read_mxa_error_.OnCycle();
 
-    krc_error_.OnCycle();
     return read_mxa_error_.ERRORID;
   }
 
@@ -478,7 +476,6 @@ private:
   KRC_READMXASTATUS mxa_read_status_;
   KRC_AUTOMATICEXTERNAL mxa_aut_ext_;
   KRC_AUTOSTART mxa_auto_start_;
-  KRC_ERROR krc_error_;
   KRC_MESSAGERESET message_reset_;
   // A drives-off holds DRIVES_OFF low for at least this many telegrams, and until PERI_RDY has read
   // 0 for as many in a row, so a power-up the KRC already accepted is stopped too
