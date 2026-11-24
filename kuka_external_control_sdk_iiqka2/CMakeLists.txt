@@ -236,6 +236,14 @@ if(BUILD_TESTING)
   gtest_discover_tests(test_mxa_reconnect PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
   gtest_discover_tests(test_mxa_telegram_hook PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
   gtest_discover_tests(test_mxa_brake_test_status PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
+
+  # A measurement, not a test: timing depends on the host, so ctest does not run it
+  add_executable(mxa_telegram_jitter test/mxa_telegram_jitter.cc)
+  target_link_libraries(mxa_telegram_jitter ${target_name})
+  target_include_directories(mxa_telegram_jitter PRIVATE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../kuka_external_control_sdk_common/utils/include>"
+  )
+  target_compile_features(mxa_telegram_jitter PRIVATE cxx_std_17)
 endif()
 
 install(TARGETS ${target_name} EXPORT SdkExport

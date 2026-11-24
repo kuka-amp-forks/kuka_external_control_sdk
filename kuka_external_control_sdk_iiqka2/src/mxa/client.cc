@@ -175,6 +175,15 @@ bool Client::IsRsiCancelled() const { return cancelled_; }
 
 bool Client::IsTelegramPending() const { return udp_subscriber_->IsMessagePending(); }
 
+std::optional<std::thread::native_handle_type> Client::KeepAliveThreadNativeHandle()
+{
+  if (!keep_alive_thread_.joinable())
+  {
+    return std::nullopt;
+  }
+  return keep_alive_thread_.native_handle();
+}
+
 void Client::HandleRsiCancel()
 {
   if (!cancel_requested_)
@@ -256,8 +265,14 @@ Status Client::RegisterStatusUpdateHandler(std::unique_ptr<IStatusUpdateHandler>
   {
     return {ReturnCode::ERROR, "Status update handler cannot be null"};
   }
+  // The keep-alive thread may still be using the old handler
+  if (status_update_handler_ != nullptr && keep_alive_thread_.joinable())
+  {
+    return {ReturnCode::ERROR, "Status update handler already registered"};
+  }
 
   status_update_handler_ = std::move(handler);
+  status_update_handler_ptr_.store(status_update_handler_.get(), std::memory_order_release);
   return {ReturnCode::OK, "Registered status update handler"};
 }
 
@@ -309,6 +324,7 @@ void Client::StartKeepAliveThread()
 
       while (!stop_requested_)
       {
+        auto * status_handler = status_update_handler_ptr_.load(std::memory_order_acquire);
         if (
           udp_subscriber_->WaitForAndReceive(kUDPTimeoutMs) ==
           os::core::udp::communication::Subscriber::ErrorCode::kSuccess)
@@ -318,9 +334,9 @@ void Client::StartKeepAliveThread()
             udp_subscriber_->GetMessage().second);
 
           connected = true;
-          if (status_update_handler_ != nullptr)
+          if (status_handler != nullptr)
           {
-            status_update_handler_->OnTelegramReceived();
+            status_handler->OnTelegramReceived();
           }
         }
         else if (tick > kInitTimeoutTicks && connected)
@@ -402,7 +418,7 @@ void Client::StartKeepAliveThread()
           // ----------------------------------------------------------------------------
 
           // Before writing the output buffer, send status update
-          if (status_update_handler_ != nullptr)
+          if (status_handler != nullptr)
           {
             status_update.control_mode_ = control_mode_;
             status_update.cycle_time_ = cycle_time_;
@@ -419,7 +435,7 @@ void Client::StartKeepAliveThread()
             status_update.move_enable_sent_ = mxa_wrapper_.moveEnableSent();
             if (status_update != prev_status_update)
             {
-              status_update_handler_->OnStatusUpdateReceived(status_update);
+              status_handler->OnStatusUpdateReceived(status_update);
               prev_status_update = status_update;
             }
           }

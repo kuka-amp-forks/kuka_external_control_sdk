@@ -186,4 +186,62 @@ TEST(MxaTelegramHook, ReportsTelegramPendingUntilReceived)
   EXPECT_TRUE(WaitFor([&client] { return !client.IsTelegramPending(); }));
 }
 
+// The native handle is available once the keep-alive thread is running, with or without a
+// handler registered.
+TEST(MxaTelegramHook, ExposesKeepAliveThreadNativeHandle)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+
+  Client client("127.0.0.1", kClientPort);
+  EXPECT_FALSE(client.KeepAliveThreadNativeHandle().has_value());
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  EXPECT_TRUE(WaitFor([&client] { return client.KeepAliveThreadNativeHandle().has_value(); }));
+}
+
+// No handler registered before Setup(); the keep-alive thread is already running when this
+// one is, and it must still take effect
+TEST(MxaStatusHandler, FirstRegistrationAfterSetupSucceeds)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+  constexpr int kTelegramSize = 256;
+
+  Client client("127.0.0.1", kClientPort);
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  auto handler = std::make_unique<CountingStatusHandler>();
+  auto * counts = handler.get();
+  ASSERT_EQ(client.RegisterStatusUpdateHandler(std::move(handler)).return_code, ReturnCode::OK);
+
+  Publisher sender(SocketAddress("127.0.0.1", kClientPort), SocketAddress(), false);
+  ASSERT_EQ(sender.Setup(), Publisher::ErrorCode::kSuccess);
+  const uint8_t telegram[kTelegramSize] = {};
+  ASSERT_EQ(sender.Send(telegram, kTelegramSize), Publisher::ErrorCode::kSuccess);
+  EXPECT_TRUE(WaitFor([counts] { return counts->telegrams >= 1; }));
+}
+
+// A second registration while the keep-alive thread is running could replace the handler it
+// still holds a raw pointer to, so it must be rejected rather than racing a use-after-free
+TEST(MxaStatusHandler, SecondRegistrationWhileRunningIsRejected)
+{
+  const int kClientPort = GetEphemeralUdpPort();
+  constexpr int kTelegramSize = 256;
+
+  Client client("127.0.0.1", kClientPort);
+  auto first = std::make_unique<CountingStatusHandler>();
+  auto * first_counts = first.get();
+  ASSERT_EQ(client.RegisterStatusUpdateHandler(std::move(first)).return_code, ReturnCode::OK);
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  auto status = client.RegisterStatusUpdateHandler(std::make_unique<CountingStatusHandler>());
+  EXPECT_EQ(status.return_code, ReturnCode::ERROR);
+
+  Publisher sender(SocketAddress("127.0.0.1", kClientPort), SocketAddress(), false);
+  ASSERT_EQ(sender.Setup(), Publisher::ErrorCode::kSuccess);
+  const uint8_t telegram[kTelegramSize] = {};
+  ASSERT_EQ(sender.Send(telegram, kTelegramSize), Publisher::ErrorCode::kSuccess);
+  // The original handler, not the rejected one, must be the one still in use
+  EXPECT_TRUE(WaitFor([first_counts] { return first_counts->telegrams >= 1; }));
+}
+
 }  // namespace
