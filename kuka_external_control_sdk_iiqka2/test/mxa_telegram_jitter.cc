@@ -277,7 +277,16 @@ int main(int argc, char ** argv)
   for (size_t i = kWarmup; i < n; i++)
   {
     inter_arrival.push_back(stamps->stamps[i] - stamps->stamps[i - 1]);
-    latency.push_back(stamps->stamps[i] - sent[i]);
+  }
+  // Latency pairs the i-th receive with the i-th send; one dropped datagram shifts every
+  // later pairing by a period, so it is only meaningful if nothing was dropped
+  const bool complete = n == static_cast<size_t>(count);
+  if (complete)
+  {
+    for (size_t i = kWarmup; i < n; i++)
+    {
+      latency.push_back(stamps->stamps[i] - sent[i]);
+    }
   }
 
   std::printf(
@@ -286,6 +295,14 @@ int main(int argc, char ** argv)
     scheduled ? ("SCHED_FIFO " + std::to_string(fifo)).c_str() : "default scheduling",
     static_cast<int>(busy.size()));
   Report("inter-arrival", inter_arrival);
-  Report("latency", latency);
+  if (complete)
+  {
+    Report("latency", latency);
+  }
+  else
+  {
+    std::printf(
+      "latency: skipped, %d of %d telegrams were dropped\n", count - static_cast<int>(n), count);
+  }
   return 0;
 }
