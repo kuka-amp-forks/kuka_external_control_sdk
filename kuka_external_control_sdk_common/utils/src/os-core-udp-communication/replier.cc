@@ -94,6 +94,14 @@ Replier::ErrorCode Replier::ReceiveRequestOrTimeout(std::chrono::microseconds re
   }
 }
 
+Replier::ErrorCode Replier::EmptyBufferNow()
+{
+  int recv_ret =
+    socket_.ReceiveAllWithTimeout(std::chrono::microseconds(0), server_buffer_, kMaxBufferSize);
+  return recv_ret == Replier::ErrorCode::kSuccess ? Replier::ErrorCode::kSuccess
+                                                  : Replier::ErrorCode::kSocketError;
+}
+
 Replier::ErrorCode Replier::EmptyBuffer()
 {
   int recv_ret = socket_.ReceiveAllWithTimeout(

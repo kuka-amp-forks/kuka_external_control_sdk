@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <new>
 #include <string>
@@ -108,6 +109,10 @@ public:
   bool motion_enable_message = false;
   // A $CORRECTION stop: confirming does not clear it, only a program reset does
   bool correction_stop = false;
+  // An error stop's message: DRIVES_ON does nothing until it is confirmed
+  bool error_message = false;
+  // Telegrams between an accepted DRIVES_ON edge and PERI_RDY; a DRIVES_OFF low in between stops it
+  int power_up_cycles = 0;
   bool rsi_running = false;
   std::vector<Command> commands;
   std::vector<std::vector<uint8_t>> sent;
@@ -158,7 +163,7 @@ public:
     SetBit(in, 0, 2, true);  // USER_SAFE
     SetBit(in, 0, 3, drives_powered);
     SetBit(in, 0, 4, true);  // ROB_CAL
-    SetBit(in, 0, 6, motion_enable_message || correction_stop);
+    SetBit(in, 0, 6, motion_enable_message || correction_stop || error_message);
     SetBit(in, 1, 1, dispatcher_active);
     SetBit(in, 2, 4, true);  // EXT
     in[4] = heartbeat_;
@@ -202,15 +207,33 @@ public:
     {
       motion_enable_message = false;
     }
+    if (Bit(out, 1, 4) && !confirm_last_)
+    {
+      error_message = false;
+    }
     // The KRC confirms on the rising edge
     confirm_last_ = Bit(out, 1, 4);
-    if (Bit(out, 1, 6))
+    // The KRC switches on at a DRIVES_ON rising edge only, and ignores one while DRIVES_OFF is low
+    if (Bit(out, 1, 6) && !drives_on_last_ && !error_message && Bit(out, 1, 5))
     {
-      drives_powered = true;
+      if (power_up_cycles > 0)
+      {
+        power_up_pending_ = power_up_cycles;
+      }
+      else
+      {
+        drives_powered = true;
+      }
     }
+    drives_on_last_ = Bit(out, 1, 6);
     if (!Bit(out, 1, 5))
     {
       drives_powered = false;
+      power_up_pending_ = 0;
+    }
+    else if (power_up_pending_ > 0 && --power_up_pending_ == 0)
+    {
+      drives_powered = true;
     }
     if (
       Bit(out, 4, 0) && !motion_enable_message && !correction_stop && drives_powered && move_enable)
@@ -232,6 +255,14 @@ public:
   {
     DropLink();
     correction_stop = true;
+  }
+
+  // As on hardware just after an RSI start: the program stops with drives on and a message
+  void StopWithError()
+  {
+    AbortRsi();
+    dispatcher_active = false;
+    error_message = true;
   }
 
 private:
@@ -270,6 +301,8 @@ private:
 
   int rsi_order_ = 0;
   bool confirm_last_ = false;
+  bool drives_on_last_ = false;
+  int power_up_pending_ = 0;
   int heartbeat_ = 0;
   int last_order_id_ = 0;
 };
@@ -290,11 +323,6 @@ public:
     wrapper.getmxAOutput(in_);
     client_.ContinueOrderIds();
     wrapper.mxACycle();
-    if (tick_ <= Client::kInitTimeoutTicks + 1)
-    {
-      wrapper.resetErrors();
-      tick_++;
-    }
     client_.HandleRsiStart();
     client_.HandleRsiCancel();
     wrapper.setmxAInput(out_);
@@ -403,7 +431,7 @@ TEST(MxaReconnect, NewClientSendsWhatANewProcessSends)
   }
 }
 
-// The early message reset is skipped when the first telegram arrives late
+// The first telegram arrives late
 TEST(MxaReconnect, LatchedErrorOfTheLastClientDoesNotHoldMoveEnableOff)
 {
   FakeKrc krc;
@@ -799,4 +827,418 @@ TEST(MxaClientInstance, OnlyOneClientIsSetUpAtATime)
 
   first.reset();
   EXPECT_EQ(second.Setup().return_code, ReturnCode::OK);
+}
+
+namespace
+{
+
+// As the driver pulses DRIVES_ON: low for two telegrams, then high for 250 ms
+bool PulseDrivesOn(Client & client, const std::function<void()> & cycle, bool reset_messages)
+{
+  constexpr int kPulseCycles = 62;
+  for (int edge = 0; edge < 20; edge++)
+  {
+    client.TurnOffDrives();
+    cycle();
+    cycle();
+    client.TurnOnDrives();
+    if (reset_messages && edge > 0)
+    {
+      client.ResetMessages();
+    }
+    for (int i = 0; i < kPulseCycles; i++)
+    {
+      cycle();
+    }
+    if (client.mxa_wrapper_.drivesPowered())
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+class MxaMessageReset : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    krc_.DropLink();
+    client_ = MakeClient();
+    link_ = std::make_unique<Link>(*client_, krc_, 1);
+    for (int i = 0; i < kCyclesToStart; i++)
+    {
+      Cycle();
+    }
+    ASSERT_GE(RunStart(*client_, *link_, krc_).start_cycle, 0);
+
+    // As on hardware: stopped by an error just after the start, then cancelled with drives off
+    krc_.StopWithError();
+    client_->RequestRsiCancel();
+    client_->TurnOffDrives();
+    for (int i = 0; i < Client::kRsiCancelHoldCycles + 10; i++)
+    {
+      Cycle();
+    }
+    ASSERT_TRUE(client_->IsRsiCancelled());
+    ASSERT_FALSE(krc_.drives_powered);
+  }
+
+  void Cycle()
+  {
+    fake_now_ms += 4;
+    link_->Cycle();
+  }
+
+  FakeClock clock_;
+  FakeKrc krc_;
+  std::unique_ptr<Client> client_;
+  std::unique_ptr<Link> link_;
+};
+
+TEST_F(MxaMessageReset, DrivesOnAloneStaysOffAfterAnErrorStop)
+{
+  EXPECT_FALSE(PulseDrivesOn(
+    *client_, [this] { Cycle(); }, false));
+  EXPECT_TRUE(krc_.error_message);
+}
+
+TEST_F(MxaMessageReset, ResetsMessageOnRequest)
+{
+  client_->ResetMessages();
+  Cycle();
+
+  EXPECT_TRUE(Bit(krc_.sent.back().data(), 4, 5)) << "MESSAGERESET not sent";
+  EXPECT_TRUE(Bit(krc_.sent.back().data(), 1, 4)) << "CONF_MESS not sent";
+  EXPECT_FALSE(Bit(krc_.sent.back().data(), 1, 6)) << "DRIVES_ON sent";
+  EXPECT_FALSE(krc_.error_message);
+}
+
+TEST_F(MxaMessageReset, DrivesComeOnWhenTheResetFollowsTheEdges)
+{
+  EXPECT_TRUE(PulseDrivesOn(
+    *client_, [this] { Cycle(); }, true));
+  EXPECT_FALSE(krc_.error_message);
+}
+
+// As after a guard stop once the drives were on: the reset must not switch them back on
+TEST_F(MxaMessageReset, ResetEndsOnceTheDrivesAreOn)
+{
+  client_->ResetMessages();
+  Cycle();
+  krc_.drives_powered = true;
+  for (int i = 0; i < 10; i++)
+  {
+    Cycle();
+  }
+
+  krc_.drives_powered = false;
+  const std::size_t dropped = krc_.sent.size();
+  for (int i = 0; i < 100; i++)
+  {
+    Cycle();
+  }
+  for (std::size_t i = dropped; i < krc_.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc_.sent[i].data(), 1, 6)) << "DRIVES_ON in telegram " << i;
+    ASSERT_FALSE(Bit(krc_.sent[i].data(), 1, 4)) << "CONF_MESS in telegram " << i;
+  }
+  EXPECT_FALSE(krc_.drives_powered);
+}
+
+// Drives on is the client's request alone; the link start only resets and confirms messages
+TEST(MxaDrivesOn, NewLinkLeavesTheDrivesOffAfterAnErrorStop)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  krc.StopWithError();
+  krc.drives_powered = false;
+
+  auto client = MakeClient();
+  Link(*client, krc, 1).Cycles(kCyclesToStart);
+
+  EXPECT_FALSE(krc.error_message);
+  EXPECT_FALSE(krc.drives_powered);
+  for (std::size_t i = 0; i < krc.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 6)) << "DRIVES_ON in telegram " << i;
+  }
+}
+
+// A drives-off ends the link start's message reset and its confirm pulses
+TEST(MxaDrivesOn, DrivesOffEndsTheMessageReset)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "no message reset before the drives-off";
+
+  client->TurnOffDrives();
+  link.Cycle();
+  const std::size_t off = krc.sent.size();
+  link.Cycles(100);
+
+  for (std::size_t i = off; i < krc.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 4, 5)) << "MESSAGERESET in telegram " << i;
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 4)) << "CONF_MESS in telegram " << i;
+  }
+}
+
+// As KRC_ERROR's message reset did, which recovered a KRC on a new link, but without DRIVES_ON
+TEST(MxaDrivesOn, LinkStartPulsesTheConfirmUntilTheDrivesOnRequest)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToOnline + 500; i++)
+  {
+    cycle();
+  }
+
+  int edges = 0;
+  for (std::size_t i = 1; i < krc.sent.size(); i++)
+  {
+    const auto * telegram = krc.sent[i].data();
+    edges += Bit(telegram, 1, 4) && !Bit(krc.sent[i - 1].data(), 1, 4) ? 1 : 0;
+    ASSERT_FALSE(Bit(telegram, 1, 6)) << "DRIVES_ON in telegram " << i;
+  }
+  EXPECT_GE(edges, 3) << "CONF_MESS not pulsed";
+  EXPECT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "MESSAGERESET not held";
+
+  client->TurnOnDrives();
+  cycle();
+  const std::size_t on = krc.sent.size();
+  for (int i = 0; i < 100; i++)
+  {
+    cycle();
+  }
+  for (std::size_t i = on; i < krc.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 4, 5)) << "MESSAGERESET in telegram " << i;
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 4)) << "CONF_MESS in telegram " << i;
+  }
+}
+
+// The deadline of a drives-on attempt can run out after the KRC accepted an edge
+TEST(MxaDrivesOn, DrivesOffStopsAnAcceptedPowerUp)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  krc.drives_powered = false;
+  krc.power_up_cycles = 20;
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+
+  client->TurnOnDrives();
+  link.Cycles(2);
+  ASSERT_FALSE(krc.drives_powered);
+  client->TurnOffDrives();
+  link.Cycles(100);
+
+  EXPECT_FALSE(krc.drives_powered);
+}
+
+TEST_F(MxaMessageReset, ASecondResetSendsANewEdge)
+{
+  client_->ResetMessages();
+  Cycle();
+  ASSERT_TRUE(Bit(krc_.sent.back().data(), 1, 4));
+
+  client_->ResetMessages();
+  Cycle();
+  EXPECT_FALSE(Bit(krc_.sent.back().data(), 1, 4)) << "no low telegram before the new edge";
+  Cycle();
+  EXPECT_TRUE(Bit(krc_.sent.back().data(), 1, 4));
+}
+
+TEST(MxaDrivesOn, DrivesOffRightAfterDrivesOnIsHeld)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+
+  client->TurnOnDrives();
+  client->TurnOffDrives();
+  const std::size_t off = krc.sent.size();
+  link.Cycles(10);
+
+  for (std::size_t i = off; i < krc.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 5)) << "DRIVES_OFF high in telegram " << i;
+  }
+  EXPECT_FALSE(krc.drives_powered);
+}
+
+// A configured component that is never activated must not keep acknowledging the KRC's messages
+TEST(MxaDrivesOn, LinkStartConfirmEndsByItself)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToOnline + 200; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "no message reset after the link start";
+
+  for (int i = 0; i < 1000; i++)
+  {
+    cycle();
+  }
+  const std::size_t from = krc.sent.size();
+  for (int i = 0; i < 100; i++)
+  {
+    cycle();
+  }
+  for (std::size_t i = from; i < krc.sent.size(); i++)
+  {
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 4, 5)) << "MESSAGERESET in telegram " << i;
+    ASSERT_FALSE(Bit(krc.sent[i].data(), 1, 4)) << "CONF_MESS in telegram " << i;
+  }
+}
+
+// drivesOn() landing between ApplyDrivesOff() and the DRIVES_ON assignment of the same
+// mxACycle must not raise DRIVES_ON on a telegram that still carries DRIVES_OFF low
+TEST(MxaDrivesOn, DrivesOnDuringAHeldDrivesOffNeverRacesAnInvalidEdge)
+{
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  link.Cycles(kCyclesToStart);
+
+  auto & wrapper = client->mxa_wrapper_;
+  client->TurnOffDrives();
+  link.Cycles(2);
+  ASSERT_FALSE(wrapper.mxa_aut_ext_.DRIVES_OFF) << "drives-off not held yet";
+
+  // ApplyDrivesOff() already ran this cycle on the stale drives_off_cycles_ when the
+  // client thread's drivesOn() lands, setting drives_on_requested_ before ApplyDrivesOn() runs
+  wrapper.ApplyDrivesOff(/*peri_rdy=*/false);
+  client->TurnOnDrives();
+  wrapper.ApplyDrivesOn();
+
+  EXPECT_FALSE(wrapper.mxa_aut_ext_.DRIVES_ON)
+    << "DRIVES_ON raised in a telegram that still carries DRIVES_OFF low";
+
+  // The next cycle carries DRIVES_OFF high (ApplyDrivesOff() now sees the cancel) and a
+  // clean DRIVES_ON edge, which is what the KRC actually switches on from
+  wrapper.ApplyDrivesOff(/*peri_rdy=*/false);
+  wrapper.ApplyDrivesOn();
+  EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_OFF);
+  EXPECT_TRUE(wrapper.mxa_aut_ext_.DRIVES_ON);
+}
+
+class MxaRequestedReset : public ::testing::Test
+{
+protected:
+  void SetUp() override { KRC_AXISGROUPREFARR[kAxisGroup].INTFBERRORID = 0; }
+};
+
+// With PERI_RDY already high, no rising edge ends the reset
+TEST_F(MxaRequestedReset, EndsAfterABoundEvenWithPeriRdyAlreadyHigh)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToStart; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(krc.drives_powered) << "PERI_RDY must already be high entering the request";
+
+  client->ResetMessages();
+  cycle();
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "MESSAGERESET not sent";
+
+  // Still short of the bound, at about 2.9 s of fake time since the request
+  for (int i = 0; i < 724; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset ended before its bound, at " << fake_now_ms << " ms";
+
+  for (int i = 0; i < 300; i++)
+  {
+    cycle();
+  }
+  ASSERT_FALSE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset never ended with PERI_RDY already high";
+
+  KRC_AXISGROUPREFARR[kAxisGroup].INTFBERRORID = 529;
+  cycle();
+  EXPECT_EQ(client->mxa_wrapper_.read_mxa_error_.ERRORID, 529)
+    << "mxA error id still masked once the reset has ended";
+}
+
+TEST_F(MxaRequestedReset, ARequestAfterExpiryGetsAFreshEdge)
+{
+  FakeClock clock;
+  FakeKrc krc;
+  krc.DropLink();
+  auto client = MakeClient();
+  Link link(*client, krc, 1);
+  auto cycle = [&]
+  {
+    fake_now_ms += 4;
+    link.Cycle();
+  };
+  for (int i = 0; i < kCyclesToStart; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(krc.drives_powered);
+
+  client->ResetMessages();
+  cycle();
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5)) << "MESSAGERESET not sent";
+
+  // Still short of the bound, at about 2.9 s of fake time since the request
+  for (int i = 0; i < 724; i++)
+  {
+    cycle();
+  }
+  ASSERT_TRUE(Bit(krc.sent.back().data(), 4, 5))
+    << "requested reset ended before its bound, at " << fake_now_ms << " ms";
+
+  for (int i = 0; i < 300; i++)
+  {
+    cycle();
+  }
+  ASSERT_FALSE(Bit(krc.sent.back().data(), 1, 4)) << "first request never expired";
+
+  client->ResetMessages();
+  cycle();
+  EXPECT_TRUE(Bit(krc.sent.back().data(), 1, 4))
+    << "a request after expiry sent no new CONF_MESS edge";
 }
