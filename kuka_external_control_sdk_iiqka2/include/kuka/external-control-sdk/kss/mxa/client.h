@@ -68,7 +68,7 @@ public:
   bool IsTelegramPending() const;
 
   // Native handle of the keep-alive thread, to set its scheduling and affinity;
-  // empty before Setup. Valid only while the thread is running.
+  // empty before Setup, valid from Setup() until the Client is destroyed.
   std::optional<std::thread::native_handle_type> KeepAliveThreadNativeHandle();
 
   // Reset class to be able to start RSI again
