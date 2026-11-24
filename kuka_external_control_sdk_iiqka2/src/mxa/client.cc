@@ -265,6 +265,11 @@ Status Client::RegisterStatusUpdateHandler(std::unique_ptr<IStatusUpdateHandler>
   {
     return {ReturnCode::ERROR, "Status update handler cannot be null"};
   }
+  // The keep-alive thread may still be using the old handler
+  if (status_update_handler_ != nullptr && keep_alive_thread_.joinable())
+  {
+    return {ReturnCode::ERROR, "Status update handler already registered"};
+  }
 
   status_update_handler_ = std::move(handler);
   status_update_handler_ptr_.store(status_update_handler_.get(), std::memory_order_release);

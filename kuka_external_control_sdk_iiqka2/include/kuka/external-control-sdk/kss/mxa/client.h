@@ -99,7 +99,8 @@ public:
 
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 
-  // Re-registering a handler while the keep-alive thread is running is unsupported.
+  // Returns ERROR if a handler is already registered and the keep-alive thread is running;
+  // register before Setup() or once right after it
   Status RegisterStatusUpdateHandler(std::unique_ptr<IStatusUpdateHandler> && handler);
 
 private:
